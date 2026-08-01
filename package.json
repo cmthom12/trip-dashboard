@@ -1,0 +1,13 @@
+{
+  "name": "trip-dashboard-template",
+  "version": "1.2.0",
+  "private": true,
+  "description": "Self-hosted family trip dashboard — clean template (synthetic sample data, no personal data)",
+  "main": "server.js",
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=22" },
+  "dependencies": {
+    "express": "^5.2.1",
+    "better-sqlite3": "^12.11.1"
+  }
+}

@@ -1,0 +1,28 @@
+# Dependencies — rebuilt by `npm install`, never committed
+node_modules/
+
+# The live database and its write-ahead-log sidecars — your trip's data, never commit it
+*.db
+*.db-shm
+*.db-wal
+
+# Secrets and logs
+.env
+.env.*
+*.log
+npm-debug.log*
+
+# TLS material (local HTTPS experiments, certs, keys) — never commit
+*.pem
+*.key
+*.crt
+
+# Ad-hoc database backups (e.g. data.db.backup-YYYY-MM-DD)
+*.db.backup*
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp

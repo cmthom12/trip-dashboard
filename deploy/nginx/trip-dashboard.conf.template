@@ -1,0 +1,60 @@
+# Trip Dashboard — Nginx reverse proxy (HTTPS).
+# The placeholder tokens below are filled in by deploy/setup-https.sh.
+# You can also fill them by hand and drop this in /etc/nginx/sites-available/.
+#
+#   __SERVER_NAME__  your domain (e.g. trip.example.com) OR public IP
+#   __APP_PORT__     the Node app port (default 3000)
+#   __WEBROOT__      ACME challenge web root (default /var/www/letsencrypt)
+#   __CERT_DIR__     /etc/letsencrypt/live/<__SERVER_NAME__>
+
+# ---- HTTP: serve ACME challenges, send everything else to HTTPS ----
+server {
+    listen 80;
+    listen [::]:80;
+    server_name __SERVER_NAME__;
+
+    # Let's Encrypt validation files (do NOT redirect these)
+    location ^~ /.well-known/acme-challenge/ {
+        root __WEBROOT__;
+        default_type "text/plain";
+        allow all;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+# ---- HTTPS: terminate TLS, proxy to the Node app ----
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name __SERVER_NAME__;
+
+    ssl_certificate     __CERT_DIR__/fullchain.pem;
+    ssl_certificate_key __CERT_DIR__/privkey.pem;
+
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 1d;
+
+    # HSTS — enable ONLY with a stable DOMAIN cert. Do NOT enable with a 6-day IP
+    # cert: if that cert ever lapses, HSTS would lock clients out of the site.
+    # add_header Strict-Transport-Security "max-age=31536000" always;
+
+    # the app's PWA + API; backups can be a few MB
+    client_max_body_size 8m;
+
+    location / {
+        proxy_pass http://127.0.0.1:__APP_PORT__;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade           $http_upgrade;
+        proxy_set_header Connection        "upgrade";
+        proxy_read_timeout 60s;
+    }
+}
