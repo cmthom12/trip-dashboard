@@ -2,6 +2,7 @@ const express = require('express');
 const Database = require('better-sqlite3');
 const path = require('path');
 const crypto = require('crypto');
+const fs = require('fs');
 const app = express();
 
 app.use(express.json());
@@ -52,8 +53,12 @@ db.exec(`
 // Carry any existing single-token logins into the multi-device token table (so current sessions survive the upgrade).
 try { db.exec("INSERT OR IGNORE INTO user_tokens (token, name) SELECT token, name FROM users WHERE token IS NOT NULL AND token <> ''"); } catch (e) {}
 
+// CORS_ORIGIN env pins CORS to one exact origin (e.g. https://vegas.example.net);
+// unset keeps the permissive template default.
+const CORS_ORIGIN = process.env.CORS_ORIGIN || '';
 app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Origin', CORS_ORIGIN || '*');
+  if (CORS_ORIGIN) res.header('Vary', 'Origin');
   res.header('Access-Control-Allow-Headers', 'Content-Type, X-Op-Id, X-Auth-Token');
   res.header('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
   if (req.method === 'OPTIONS') return res.sendStatus(204);
@@ -73,6 +78,112 @@ app.use((req, res, next) => {
     res.json = (body) => { try { if (res.statusCode < 400) _opMark.run(opId, Date.now()); } catch(e){} return _json(body); };
   } catch(e) {}
   next();
+});
+
+// ── ADMIN CONSOLE (additive; every /api/admin/* route 404s unless the ADMIN_KEY env var is set) ──
+// Registered BEFORE the token-auth middleware: admin requests authenticate by key alone,
+// while idempotency (above) still applies to admin POSTs carrying X-Op-Id.
+const ADMIN_KEY = process.env.ADMIN_KEY || '';
+const ADMIN_FAILS = { count: 0, until: 0 }; // in-memory lockout, same pattern as LOGIN_FAILS
+const _adminDigest = s => crypto.createHash('sha256').update(String(s)).digest();
+app.use('/api/admin', (req, res, next) => {
+  if (!ADMIN_KEY) return res.status(404).json({ error: 'Not found' }); // disabled: admin is invisible
+  const now = Date.now();
+  if (ADMIN_FAILS.until > now) return res.status(429).json({ error: 'Too many attempts', retryMs: ADMIN_FAILS.until - now });
+  const key = req.get('X-Admin-Key') || '';
+  if (!crypto.timingSafeEqual(_adminDigest(key), _adminDigest(ADMIN_KEY))) {
+    ADMIN_FAILS.count += 1;
+    if (ADMIN_FAILS.count >= 5) { ADMIN_FAILS.until = now + 30 * 60 * 1000; ADMIN_FAILS.count = 0; }
+    return res.status(401).json({ error: 'Bad admin key' });
+  }
+  ADMIN_FAILS.count = 0; ADMIN_FAILS.until = 0;
+  next();
+});
+
+// Trip title/dates for the overview panel, parsed once from the trip-data block.
+let TRIP_META = { title: '', startDate: '', endDate: '' };
+try {
+  const _html = fs.readFileSync(path.join(__dirname, 'public', 'index.html'), 'utf8');
+  const _m = _html.match(/<script type="application\/json" id="trip-data">\s*([\s\S]*?)<\/script>/);
+  const _t = (JSON.parse(_m[1]).trip) || {};
+  TRIP_META = { title: _t.title || '', startDate: _t.startDate || '', endDate: _t.endDate || '' };
+} catch (e) {}
+
+app.get('/api/admin/overview', (req, res) => {
+  const votesBy = {};
+  db.prepare('SELECT names FROM interests').all().forEach(r => {
+    try { JSON.parse(r.names).forEach(n => { votesBy[n] = (votesBy[n] || 0) + 1; }); } catch (e) {}
+  });
+  const _cnt = (sql, n) => db.prepare(sql).get(n).c;
+  const travelers = ALLOWED.map(name => ({
+    name,
+    registered: !!db.prepare('SELECT name FROM users WHERE name = ?').get(name),
+    planner: PLANNERS.includes(name),
+    lastActivity: db.prepare(`SELECT MAX(t) AS t FROM (
+      SELECT MAX(created_at) AS t FROM user_tokens WHERE name = @n
+      UNION ALL SELECT MAX(created_at) FROM notes WHERE author = @n
+      UNION ALL SELECT MAX(created_at) FROM suggestions WHERE author = @n
+      UNION ALL SELECT MAX(created_at) FROM day_schedule WHERE created_by = @n
+      UNION ALL SELECT MAX(created_at) FROM reservations WHERE created_by = @n
+      UNION ALL SELECT MAX(created_at) FROM packing WHERE who = @n
+    )`).get({ n: name }).t || null,
+    counts: {
+      votes: votesBy[name] || 0,
+      notes: _cnt('SELECT COUNT(*) AS c FROM notes WHERE author = ?', name),
+      suggestions: _cnt('SELECT COUNT(*) AS c FROM suggestions WHERE author = ?', name),
+      packing: _cnt('SELECT COUNT(*) AS c FROM packing WHERE who = ?', name)
+    }
+  }));
+  const rows = {};
+  ['users', 'user_tokens', 'interests', 'flight_status', 'notes', 'suggestions',
+   'reservations', 'packing', 'day_schedule', 'processed_ops'].forEach(t => {
+    rows[t] = db.prepare('SELECT COUNT(*) AS c FROM ' + t).get().c;
+  });
+  let dbSizeBytes = 0;
+  try { dbSizeBytes = fs.statSync(path.join(__dirname, 'data.db')).size; } catch (e) {}
+  let backups = [];
+  try {
+    backups = fs.readdirSync(__dirname).filter(f => f.startsWith('data.db.backup-')).map(f => {
+      const st = fs.statSync(path.join(__dirname, f));
+      return { file: f, mtime: st.mtime.toISOString(), sizeBytes: st.size };
+    }).sort((a, b) => b.mtime.localeCompare(a.mtime));
+  } catch (e) {}
+  res.json({ travelers, trip: TRIP_META, db: { sizeBytes: dbSizeBytes, rows }, backups });
+});
+
+// Clears the login credential only: the user's PIN row + every session token.
+// Registration re-opens for that name on next login; votes/notes/content untouched.
+const _adminClearCred = name => db.transaction(() => {
+  const hadPin = !!db.prepare('SELECT name FROM users WHERE name = ?').get(name);
+  const tokensRevoked = db.prepare('DELETE FROM user_tokens WHERE name = ?').run(name).changes;
+  db.prepare('DELETE FROM users WHERE name = ?').run(name);
+  return { hadPin, tokensRevoked };
+})();
+
+app.post('/api/admin/reset-pin', (req, res) => {
+  const name = (req.body || {}).name;
+  if (!ALLOWED.includes(name)) return res.status(400).json({ error: 'Unknown name' });
+  const out = _adminClearCred(name);
+  res.json({ ok: true, name, hadPin: out.hadPin, tokensRevoked: out.tokensRevoked,
+    message: 'PIN cleared — ' + name + ' sets a fresh PIN at next sign-in. Their votes, notes and lists are untouched.' });
+});
+
+app.post('/api/admin/remove-user', (req, res) => {
+  const name = (req.body || {}).name;
+  if (!ALLOWED.includes(name)) return res.status(400).json({ error: 'Unknown name' });
+  const out = _adminClearCred(name);
+  delete LOGIN_FAILS[name];
+  res.json({ ok: true, name, hadPin: out.hadPin, tokensRevoked: out.tokensRevoked, lockoutCleared: true,
+    message: name + "'s sign-in and lockout state were removed. Their content (votes, notes, suggestions, packing) is retained." });
+});
+
+app.post('/api/admin/backup', (req, res, next) => {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const file = 'data.db.backup-admin-' + stamp;
+  // better-sqlite3 online backup: safe while the db is live, unlike copying the file.
+  db.backup(path.join(__dirname, file))
+    .then(() => res.json({ ok: true, file }))
+    .catch(next);
 });
 
 // ── AUTH: writes must carry a valid session token; we trust the token, not a self-asserted author. ──

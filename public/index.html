@@ -1290,7 +1290,6 @@ function zoneOfAct(actId, title) {
   }
   return null;
 }
-const ATHENS_SIDE = {};
 function fmtLegMin(m) {
   const r5 = Math.round(m / 5) * 5;
   if (r5 < 60) return r5 + " min";
@@ -1317,22 +1316,10 @@ function legHint(za, zb, hhmm, dayId) {
     const p = hhmm.split(":");
     h = +p[0] + +p[1] / 60;
   }
-  const touchesAthens = ATHENS_SIDE[za] || ATHENS_SIDE[zb];
-  let mult = 1.15,
-    label = null;
-  if (h !== null) {
-    if (h >= 7.5 && h < 10) {
-      mult = touchesAthens ? 1.25 : 1.1;
-      label = touchesAthens ? "morning peak" : null;
-    } else if (h >= 17 && h < 21) {
-      mult = touchesAthens ? 1.35 : 1.1;
-      label = touchesAthens ? "evening peak" : null;
-    } else mult = 1.1;
-  }
+  const mult = h !== null ? 1.1 : 1.15;
   const lo = Math.max(5, Math.round(base * 0.95 / 5) * 5),
     hi = Math.round(base * mult / 5) * 5;
   const flags = [];
-  if (label) flags.push(label);
   const txt = "🚗 ~" + (base >= 90 ? lo === hi ? fmtLegMin(lo) : fmtLegMin(lo) + "–" + fmtLegMin(hi) : lo === hi ? lo + " min" : lo + "–" + hi + " min");
   return {
     text: txt,
@@ -1745,114 +1732,94 @@ function TripMap({
       popupAnchor: [0, -24]
     });
     const pop = (title, sub, note, q) => '<div style="min-width:158px;font-family:DM Sans,sans-serif"><div style="font-weight:700;font-size:13px;color:#0D2B4E">' + title + '</div><div style="font-size:11px;color:#6B7280;margin:1px 0 5px">' + sub + '</div><div style="font-size:12px;color:#374151;line-height:1.35;margin-bottom:8px">' + note + '</div><a href="' + gm(q) + '" target="_blank" rel="noopener" style="display:inline-block;font-size:11px;font-weight:700;color:#fff;background:#1A73E8;padding:5px 10px;border-radius:8px;text-decoration:none">Open in Google Maps &#8599;</a></div>';
-    const PORT = '#1B6CA8',
-      LAND = '#C2410C',
-      AIR = '#64748B';
-    const cruise = [{
-      n: 1,
-      name: 'Stop 1 \u2014 Embark',
-      date: 'Day 1',
-      note: 'Sample embarkation port.',
-      q: '',
-      ll: [40.6401, 22.9444]
-    }, {
-      n: 2,
-      name: 'Stop 2',
-      date: 'Day 2',
-      note: 'Sample port of call.',
-      q: '',
-      ll: [39.6243, 19.9217]
-    }, {
-      n: 3,
-      name: 'Stop 3 \u2014 Disembark',
-      date: 'Day 3',
-      note: 'Sample disembarkation port.',
-      q: '',
-      ll: [37.9420, 23.6469]
-    }];
-    const land = [{
-      name: 'Land Base 1',
-      date: 'Days 1-2',
-      note: 'Sample land stay.',
-      q: '',
-      ll: [40.6340, 22.9350]
-    }, {
-      name: 'Land Base 2',
-      date: 'Day 3',
-      note: 'Sample land stay.',
-      q: '',
-      ll: [37.9715, 23.7257]
-    }];
-    const air = [{
-      name: 'Home Airport',
-      date: 'Start / Finish',
-      note: 'Sample home airport.',
-      q: '',
-      ll: [41.3032, -95.8941]
-    }, {
-      name: 'Arrival Airport',
-      date: 'Arrival / Departure',
-      note: 'Sample arrival airport.',
-      q: '',
-      ll: [37.9364, 23.9445]
-    }];
-    const route = [[40.6401, 22.9444], [39.6243, 19.9217], [37.9420, 23.6469]];
-    L.polyline(route, {
-      color: '#ffffff',
-      weight: 6,
-      opacity: .7,
-      lineJoin: 'round'
-    }).addTo(map);
-    L.polyline(route, {
-      color: PORT,
-      weight: 3,
-      opacity: .95,
-      lineJoin: 'round'
-    }).addTo(map);
-    L.polyline([land[0].ll, land[1].ll], {
-      color: LAND,
-      weight: 2,
-      opacity: .6,
-      dashArray: '4 6'
-    }).addTo(map);
-    L.polyline(air.map(p => p.ll), {
-      color: AIR,
-      weight: 2,
-      opacity: .55,
-      dashArray: '2 7'
-    }).addTo(map);
-    cruise.forEach(p => L.marker(p.ll, {
-      icon: dot(p.n, PORT)
-    }).addTo(map).bindPopup(pop(p.name, 'Cruise · ' + p.date, p.note, p.q)));
-    land.forEach(p => L.marker(p.ll, {
-      icon: dot('•', LAND)
-    }).addTo(map).bindPopup(pop(p.name, 'Land · ' + p.date, p.note, p.q)));
-    air.forEach(p => L.marker(p.ll, {
-      icon: dot('✈', AIR)
-    }).addTo(map).bindPopup(pop(p.name, 'Flight · ' + p.date, p.note, p.q)));
-    const aegean = L.latLngBounds(cruise.map(p => p.ll).concat(land.map(p => p.ll)));
-    const all = L.latLngBounds(cruise.map(p => p.ll).concat(land.map(p => p.ll)).concat(air.map(p => p.ll)));
+    const DAY_C = '#1B6CA8',
+      ACT_C = '#C2410C';
+    const dayById = {};
+    (TRIP.days || []).forEach(d => {
+      dayById[d.id] = d;
+    });
+    const dayIds = (TRIP.days || []).map(d => d.id).filter(id => DAY_COORDS && DAY_COORDS[id]);
+    if (DAY_COORDS) for (const id of Object.keys(DAY_COORDS)) {
+      if (dayIds.indexOf(id) < 0) dayIds.push(id);
+    }
+    const okLL = ll => Array.isArray(ll) && ll.length >= 2 && isFinite(ll[0]) && isFinite(ll[1]);
+    const near = (a, b) => Math.abs(a[0] - b[0]) < 0.0025 && Math.abs(a[1] - b[1]) < 0.0025;
+    const dayPins = [];
+    dayIds.forEach((id, i) => {
+      const dc = DAY_COORDS[id];
+      if (!dc || !okLL(dc.ll)) return;
+      const day = dayById[id] || {};
+      dayPins.push({
+        n: i + 1,
+        ll: dc.ll,
+        name: dc.name || day.location || day.label || id,
+        sub: [day.label, dc.date].filter(Boolean).join(' · '),
+        note: day.location || '',
+        q: dc.name || day.location || ''
+      });
+    });
+    const placed = dayPins.map(p => p.ll);
+    const actPins = [];
+    (TRIP.days || []).forEach(d => {
+      (d.activities || []).forEach(a => {
+        if (!okLL(a.ll)) return;
+        if (placed.some(ll => near(ll, a.ll))) return;
+        placed.push(a.ll);
+        actPins.push({
+          ll: a.ll,
+          name: a.name || 'Activity',
+          sub: (dayById[d.id] || {}).label || d.id,
+          note: a.desc || '',
+          q: a.name || ''
+        });
+      });
+    });
+    const route = [];
+    dayPins.forEach(p => {
+      const prev = route[route.length - 1];
+      if (!prev || prev[0] !== p.ll[0] || prev[1] !== p.ll[1]) route.push(p.ll);
+    });
+    if (route.length > 1) {
+      L.polyline(route, {
+        color: '#ffffff',
+        weight: 6,
+        opacity: .7,
+        lineJoin: 'round'
+      }).addTo(map);
+      L.polyline(route, {
+        color: DAY_C,
+        weight: 3,
+        opacity: .95,
+        lineJoin: 'round'
+      }).addTo(map);
+    }
+    dayPins.forEach(p => L.marker(p.ll, {
+      icon: dot(p.n, DAY_C)
+    }).addTo(map).bindPopup(pop(p.name, p.sub, p.note, p.q)));
+    actPins.forEach(p => L.marker(p.ll, {
+      icon: dot('•', ACT_C)
+    }).addTo(map).bindPopup(pop(p.name, p.sub, p.note, p.q)));
+    const allPts = dayPins.map(p => p.ll).concat(actPins.map(p => p.ll));
+    const dayPts = dayPins.length ? dayPins.map(p => p.ll) : allPts;
     boundsRef.current = {
-      aegean: aegean,
-      all: all
+      days: dayPts.length ? L.latLngBounds(dayPts) : null,
+      all: allPts.length ? L.latLngBounds(allPts) : null
+    };
+    const home = () => {
+      const b = boundsRef.current.all;
+      if (b) map.fitBounds(b, {
+        padding: [28, 28]
+      });else map.setView([20, 0], 2);
     };
     if (focusRef.current && focusRef.current.ll) {
       map.setView(focusRef.current.ll, focusRef.current.zoom || 11);
-    } else {
-      map.fitBounds(aegean, {
-        padding: [28, 28]
-      });
-    }
+    } else home();
     setTimeout(() => {
       try {
         map.invalidateSize();
         if (focusRef.current && focusRef.current.ll) {
           map.setView(focusRef.current.ll, focusRef.current.zoom || 11);
-        } else {
-          map.fitBounds(aegean, {
-            padding: [28, 28]
-          });
-        }
+        } else home();
       } catch (e) {}
     }, 160);
     return () => {
@@ -1870,7 +1837,7 @@ function TripMap({
       } catch (e) {}
     }
   }, [focus]);
-  const [mapView, setMapView] = React.useState('aegean');
+  const [mapView, setMapView] = React.useState('days');
   const fit = which => {
     const m = mapRef.current,
       b = boundsRef.current;
@@ -1898,6 +1865,13 @@ function TripMap({
     fontSize: 12,
     cursor: "pointer"
   });
+  const regionQ = (() => {
+    for (const d of TRIP.days || []) {
+      const dc = DAY_COORDS && DAY_COORDS[d.id];
+      if (dc && (dc.name || d.location)) return dc.name || d.location;
+    }
+    return null;
+  })();
   return React.createElement("div", {
     style: {
       maxWidth: 640,
@@ -1923,7 +1897,7 @@ function TripMap({
       marginTop: 3,
       lineHeight: 1.4
     }
-  }, "The whole journey at a glance \u2014 the cruise route in blue, land days in orange, flights dashed. Tap any pin for details and a Google Maps link.")), React.createElement("div", {
+  }, "The whole trip at a glance \u2014 numbered pins follow your days in order, dots are activities. Tap any pin for details and a Google Maps link.")), React.createElement("div", {
     style: {
       display: "flex",
       gap: 8,
@@ -1931,17 +1905,17 @@ function TripMap({
     }
   }, React.createElement("button", {
     onClick: () => {
-      setMapView('aegean');
-      fit('aegean');
+      setMapView('days');
+      fit('days');
     },
-    style: tabBtn(mapView === 'aegean')
-  }, "\u2693 Sample Cruise"), React.createElement("button", {
+    style: tabBtn(mapView === 'days')
+  }, "\uD83D\uDCCD Trip days"), React.createElement("button", {
     onClick: () => {
       setMapView('all');
       fit('all');
     },
     style: tabBtn(mapView === 'all')
-  }, "\uD83C\uDF0D Whole journey")), focus && focus.name && React.createElement("div", {
+  }, "\uD83C\uDF0D Everything")), focus && focus.name && React.createElement("div", {
     style: {
       fontSize: 12,
       color: "#0D2B4E",
@@ -1975,12 +1949,10 @@ function TripMap({
     }
   }, React.createElement("span", null, React.createElement("span", {
     style: ldot('#1B6CA8')
-  }), "Cruise port"), React.createElement("span", null, React.createElement("span", {
+  }), "Day stop"), React.createElement("span", null, React.createElement("span", {
     style: ldot('#C2410C')
-  }), "Land / base"), React.createElement("span", null, React.createElement("span", {
-    style: ldot('#64748B')
-  }), "Airport / flight")), React.createElement("a", {
-    href: "https://www.google.com/maps/search/?api=1&query=destination",
+  }), "Activity")), regionQ && React.createElement("a", {
+    href: "https://www.google.com/maps/search/?api=1&query=" + encodeURIComponent(regionQ),
     target: "_blank",
     rel: "noopener",
     style: {
@@ -1991,26 +1963,14 @@ function TripMap({
       color: "#1A73E8",
       textDecoration: "none"
     }
-  }, "Open the region in Google Maps \u2197"), React.createElement("a", {
-    href: "",
-    target: "_blank",
-    rel: "noopener",
-    style: {
-      display: "block",
-      marginTop: 8,
-      fontSize: 12,
-      fontWeight: 700,
-      color: "#0D2B4E",
-      textDecoration: "none"
-    }
-  }, "Follow your ship live \u2197"), React.createElement("div", {
+  }, "Open the region in Google Maps \u2197"), React.createElement("div", {
     style: {
       fontSize: 11,
       color: "#9CA3AF",
       marginTop: 10,
       lineHeight: 1.4
     }
-  }, "Sample route and ports \u2014 the map is illustrative for the sample trip. Map tiles \xA9 OpenStreetMap."));
+  }, "Pins and route come from your trip data. Map tiles \xA9 OpenStreetMap."));
 }
 function Countdown() {
   const dep = new Date(2026, 5, 23),

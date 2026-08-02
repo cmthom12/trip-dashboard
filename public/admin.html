@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>Trip Admin</title>
+<meta name="robots" content="noindex"/>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700&display=swap" rel="stylesheet"/>
+<style>
+*{font-family:'DM Sans',system-ui,sans-serif;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{background:#F0F2F5;margin:0;padding:16px 14px 60px;color:#374151}
+.wrap{max-width:640px;margin:0 auto}
+h1{font-family:'Playfair Display',serif;color:#0D2B4E;font-size:24px;font-weight:900;margin:6px 0 2px}
+.sub{font-size:13px;color:#6B7280;margin-bottom:16px}
+.card{background:#fff;border:1px solid #E5E7EB;border-radius:14px;padding:14px;margin-bottom:12px;box-shadow:0 1px 6px rgba(0,0,0,.05)}
+.row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.name{font-weight:700;color:#0D2B4E;font-size:16px;flex:1}
+.badge{font-size:10px;font-weight:700;border-radius:6px;padding:2px 7px;letter-spacing:.3px}
+.b-planner{background:#FEF9C3;color:#854D0E;border:1px solid #FDE68A}
+.b-reg{background:#DCFCE7;color:#166534;border:1px solid #BBF7D0}
+.b-unreg{background:#F3F4F6;color:#6B7280;border:1px solid #E5E7EB}
+.meta{font-size:12px;color:#6B7280;margin-top:5px}
+.counts{display:flex;gap:14px;font-size:12px;color:#374151;margin-top:7px;flex-wrap:wrap}
+.counts b{color:#0D2B4E}
+button{cursor:pointer;font-weight:700;border-radius:10px;font-size:12px;padding:8px 12px;border:1px solid #D1D5DB;background:#fff;color:#374151}
+button:disabled{opacity:.45;cursor:default}
+.primary{background:#0D2B4E;border-color:#0D2B4E;color:#fff}
+.danger{border-color:#FCA5A5;color:#B91C1C;background:#FEF2F2}
+.gold{background:#C9A227;border-color:#C9A227;color:#fff}
+input{font-size:16px;padding:10px 12px;border-radius:10px;border:1px solid #D1D5DB;width:100%}
+.actions{display:flex;gap:8px;margin-top:10px}
+.confirm{margin-top:10px;background:#FFFBEB;border:1px solid #FDE68A;border-radius:10px;padding:10px}
+.confirm p{margin:0 0 8px;font-size:12px;color:#854D0E}
+.gl{display:flex;justify-content:space-between;font-size:13px;padding:4px 0;border-bottom:1px solid #F3F4F6}
+.gl:last-child{border-bottom:0}
+.gl b{color:#0D2B4E}
+.msg{font-size:13px;border-radius:10px;padding:10px 12px;margin-bottom:12px;display:none}
+.msg.ok{background:#DCFCE7;border:1px solid #BBF7D0;color:#166534;display:block}
+.msg.err{background:#FEF2F2;border:1px solid #FCA5A5;color:#B91C1C;display:block}
+.hint{font-size:11px;color:#9CA3AF;margin-top:8px;line-height:1.5}
+h2{font-size:14px;color:#0D2B4E;margin:18px 0 8px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Trip Admin</h1>
+  <div class="sub">Usage at a glance, PIN resets, backups. Not linked from the app.</div>
+  <div id="msg" class="msg"></div>
+
+  <div id="gate" class="card" style="display:none">
+    <p style="font-size:13px;margin:0 0 10px">Enter the admin key for this server. It's held for this tab only (sessionStorage) and sent as <code>X-Admin-Key</code>.</p>
+    <input id="keyInput" type="password" placeholder="Admin key" autocomplete="off"/>
+    <div class="actions"><button class="primary" id="keyGo" style="flex:1">Unlock</button></div>
+    <div class="hint" id="gateHint"></div>
+  </div>
+
+  <div id="panel" style="display:none">
+    <div class="row" style="margin-bottom:10px">
+      <button class="gold" id="backupBtn">&#128190; Backup now</button>
+      <button id="refreshBtn">&#8635; Refresh</button>
+      <button id="lockBtn" style="margin-left:auto">Lock</button>
+    </div>
+    <h2>Travelers</h2>
+    <div id="travelers"></div>
+    <h2>Server</h2>
+    <div class="card" id="globals"></div>
+    <h2>Backups on server</h2>
+    <div class="card" id="backups"></div>
+    <div class="hint">Reset PIN: clears that person's PIN and signs out their devices; they simply pick a new PIN at next sign-in. Remove: same, plus clears any login lockout. Neither touches votes, notes or lists.</div>
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  var KEY_STORE = 'tg_admin_key'; // sessionStorage only — never persisted to localStorage
+  var $ = function (id) { return document.getElementById(id); };
+
+  function key() { return sessionStorage.getItem(KEY_STORE) || ''; }
+  function opId() {
+    return (window.crypto && crypto.randomUUID) ? crypto.randomUUID()
+      : 'op-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+  }
+  function flash(text, isErr) {
+    var m = $('msg');
+    m.textContent = text;
+    m.className = 'msg ' + (isErr ? 'err' : 'ok');
+    setTimeout(function () { m.className = 'msg'; }, 6000);
+  }
+  function api(path, opts) {
+    opts = opts || {};
+    var headers = { 'X-Admin-Key': key() };
+    if (opts.body) headers['Content-Type'] = 'application/json';
+    if (opts.method && opts.method !== 'GET') headers['X-Op-Id'] = opId();
+    return fetch(path, { method: opts.method || 'GET', headers: headers, body: opts.body ? JSON.stringify(opts.body) : undefined })
+      .then(function (r) {
+        if (r.status === 404) { throw { disabled: true }; }
+        if (r.status === 401) { sessionStorage.removeItem(KEY_STORE); showGate('That key was rejected.'); throw { handled: true }; }
+        return r.json().then(function (j) {
+          if (!r.ok) throw { msg: j.error || ('HTTP ' + r.status) };
+          return j;
+        });
+      });
+  }
+
+  function showGate(hint) {
+    $('gate').style.display = 'block';
+    $('panel').style.display = 'none';
+    $('gateHint').textContent = hint || '';
+  }
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+  function fmtBytes(n) {
+    if (n > 1048576) return (n / 1048576).toFixed(1) + ' MB';
+    if (n > 1024) return (n / 1024).toFixed(1) + ' KB';
+    return n + ' B';
+  }
+
+  var pendingConfirm = null; // { name, action } — one open confirmation at a time
+
+  function travelerCard(t) {
+    var badges = '<span class="badge ' + (t.registered ? 'b-reg">registered' : 'b-unreg">not registered') + '</span>'
+      + (t.planner ? ' <span class="badge b-planner">planner</span>' : '');
+    var c = t.counts || {};
+    var confirming = pendingConfirm && pendingConfirm.name === t.name;
+    return '<div class="card" data-name="' + esc(t.name) + '">'
+      + '<div class="row"><span class="name">' + esc(t.name) + '</span>' + badges + '</div>'
+      + '<div class="meta">Last activity: ' + (t.lastActivity ? esc(t.lastActivity) + ' UTC' : '—') + '</div>'
+      + '<div class="counts"><span>&#128499;&#65039; <b>' + (c.votes || 0) + '</b> votes</span>'
+      + '<span>&#128221; <b>' + (c.notes || 0) + '</b> notes</span>'
+      + '<span>&#128279; <b>' + (c.suggestions || 0) + '</b> suggestions</span>'
+      + '<span>&#127890; <b>' + (c.packing || 0) + '</b> packing</span></div>'
+      + '<div class="actions">'
+      + '<button data-act="reset-pin" data-name="' + esc(t.name) + '"' + (t.registered ? '' : ' disabled') + '>Reset PIN</button>'
+      + '<button class="danger" data-act="remove-user" data-name="' + esc(t.name) + '"' + (t.registered ? '' : ' disabled') + '>Remove</button>'
+      + '</div>'
+      + (confirming
+        ? '<div class="confirm"><p>Type <b>' + esc(t.name) + '</b> to confirm ' + (pendingConfirm.action === 'reset-pin' ? 'resetting their PIN' : 'removing their sign-in') + '. Their votes and notes are kept either way.</p>'
+          + '<input id="confirmInput" autocomplete="off" placeholder="' + esc(t.name) + '"/>'
+          + '<div class="actions"><button class="danger" data-act="confirm">Confirm</button><button data-act="cancel">Cancel</button></div></div>'
+        : '')
+      + '</div>';
+  }
+
+  function render(data) {
+    $('gate').style.display = 'none';
+    $('panel').style.display = 'block';
+    $('travelers').innerHTML = data.travelers.map(travelerCard).join('');
+    var rows = data.db && data.db.rows || {};
+    var trip = data.trip || {};
+    $('globals').innerHTML =
+      '<div class="gl"><span>Trip</span><b>' + esc(trip.title || '—') + '</b></div>'
+      + '<div class="gl"><span>Dates</span><b>' + esc((trip.startDate || '?') + ' → ' + (trip.endDate || '?')) + '</b></div>'
+      + '<div class="gl"><span>Database size</span><b>' + fmtBytes(data.db ? data.db.sizeBytes : 0) + '</b></div>'
+      + Object.keys(rows).map(function (t) {
+          return '<div class="gl"><span>' + esc(t) + '</span><b>' + rows[t] + '</b></div>';
+        }).join('');
+    $('backups').innerHTML = (data.backups && data.backups.length)
+      ? data.backups.map(function (b) {
+          return '<div class="gl"><span>' + esc(b.file) + '</span><b>' + fmtBytes(b.sizeBytes) + ' · ' + esc(b.mtime.slice(0, 16).replace('T', ' ')) + '</b></div>';
+        }).join('')
+      : '<div class="gl"><span>No backup files found next to data.db.</span></div>';
+  }
+
+  function load() {
+    api('/api/admin/overview').then(render).catch(function (e) {
+      if (e && e.disabled) { showGate('Admin is disabled on this server — set the ADMIN_KEY environment variable and restart (see ADMIN.md).'); }
+      else if (!(e && e.handled)) flash((e && e.msg) || 'Could not load overview', true);
+    });
+  }
+
+  $('travelers').addEventListener('click', function (ev) {
+    var b = ev.target.closest('button');
+    if (!b) return;
+    var act = b.getAttribute('data-act');
+    if (act === 'reset-pin' || act === 'remove-user') {
+      pendingConfirm = { name: b.getAttribute('data-name'), action: act };
+      load();
+    } else if (act === 'cancel') {
+      pendingConfirm = null;
+      load();
+    } else if (act === 'confirm') {
+      var typed = ($('confirmInput') || { value: '' }).value.trim();
+      if (typed !== pendingConfirm.name) { flash('Name did not match — nothing done.', true); return; }
+      var p = pendingConfirm; pendingConfirm = null;
+      api('/api/admin/' + p.action, { method: 'POST', body: { name: p.name } })
+        .then(function (j) { flash(j.message || 'Done.'); load(); })
+        .catch(function (e) { if (!(e && e.handled)) flash((e && e.msg) || 'Failed', true); });
+    }
+  });
+
+  $('backupBtn').addEventListener('click', function () {
+    $('backupBtn').disabled = true;
+    api('/api/admin/backup', { method: 'POST' })
+      .then(function (j) { flash('Backup written: ' + j.file); load(); })
+      .catch(function (e) { if (!(e && e.handled)) flash((e && e.msg) || 'Backup failed', true); })
+      .then(function () { $('backupBtn').disabled = false; });
+  });
+  $('refreshBtn').addEventListener('click', load);
+  $('lockBtn').addEventListener('click', function () { sessionStorage.removeItem(KEY_STORE); showGate(); });
+  $('keyGo').addEventListener('click', function () {
+    var v = $('keyInput').value.trim();
+    if (!v) return;
+    sessionStorage.setItem(KEY_STORE, v);
+    $('keyInput').value = '';
+    load();
+  });
+  $('keyInput').addEventListener('keydown', function (e) { if (e.key === 'Enter') $('keyGo').click(); });
+
+  if (key()) load(); else showGate();
+})();
+</script>
+</body>
+</html>

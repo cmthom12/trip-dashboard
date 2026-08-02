@@ -17,9 +17,13 @@ SCP="scp -i ${SSH_KEY}"
 echo "==> ensuring app dir exists"
 $SSH "$SERVER" "mkdir -p ${APP_DIR}/public"
 
-echo "==> copying app files (no node_modules, no data.db)"
+echo "==> copying app files (no node_modules, no data.db, no *.backup-* files)"
 $SCP server.js package.json package-lock.json ecosystem.config.js "${SERVER}:${APP_DIR}/"
-$SCP -r public "${SERVER}:${APP_DIR}/"
+STAGE="$(mktemp -d)"
+cp -r public "$STAGE/public"
+find "$STAGE/public" -name '*.backup-*' -type f -delete
+$SCP -r "$STAGE/public" "${SERVER}:${APP_DIR}/"
+rm -rf "$STAGE"
 
 echo "==> installing deps + starting under PM2"
 $SSH "$SERVER" "cd ${APP_DIR} && npm install --omit=dev && \

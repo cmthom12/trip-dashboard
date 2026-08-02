@@ -1,2 +1,7 @@
 # Batch files must stay CRLF on every checkout — cmd.exe can mis-parse LF-only files
 *.bat text eol=crlf
+
+# Shell scripts + nginx config run on Linux — CRLF checkouts break bash/nginx when
+# they get scp'd from a Windows working copy (field-discovered on deploy day).
+*.sh text eol=lf
+deploy/nginx/*.conf.template text eol=lf
