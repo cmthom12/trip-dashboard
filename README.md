@@ -103,7 +103,7 @@ trip-dashboard-template/
 ├── README.md
 ├── .gitignore
 ├── docs/maintenance/      # upgrade runbooks (advanced: Node 24, Express 5)
-└── deploy/                # HTTPS deploy kit (see deploy/DEPLOY.md)
+└── deploy/                # HTTPS deploy kit (see deploy/DEPLOY.md; several trips on one server: docs/MULTI_INSTANCE.md)
     ├── DEPLOY.md
     ├── provision.sh       # one-time server setup
     ├── deploy.sh          # push app from your laptop

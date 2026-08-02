@@ -9,6 +9,9 @@ node_modules/
 # Secrets and logs
 .env
 .env.*
+# Real instance map for deploy/deploy.sh (names, dirs, ports) — examples ship in
+# deploy/instances.conf; your actual rows stay local
+deploy/instances.local.conf
 *.log
 npm-debug.log*
 

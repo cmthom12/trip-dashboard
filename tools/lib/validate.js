@@ -205,6 +205,16 @@ function validateTripData(d) {
   }
   if (Array.isArray(en.facts)) warn('enrichments.facts is an array — facts still display, but keying them by day id ("day1": …) pins each fact to its day');
 
+  // ── packing (optional quick-start template override) ───────────────────────
+  if ('packing' in d) {
+    const packOk = tp => isObj(tp) && isStr(tp.label) && tp.label.trim() &&
+      Array.isArray(tp.items) && tp.items.length > 0 && tp.items.every(x => isStr(x) && x.trim());
+    if (Array.isArray(d.packing) && d.packing.length && d.packing.every(packOk))
+      ok('packing: ' + d.packing.length + ' custom quick-start template(s) — these replace the built-in packing templates');
+    else
+      warn('"packing" is present but not a non-empty array of {label, items[], emoji?} templates — the app falls back to the built-in quick-start templates');
+  }
+
   return result();
 }
 

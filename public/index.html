@@ -204,6 +204,13 @@ body{background:#F0F2F5;overscroll-behavior:none}
    "tw": "bg-teal-100 text-teal-800 border-teal-200"
   }
  },
+ "packing": [
+  {
+   "emoji": "🧳",
+   "label": "Sample quick-start",
+   "items": ["Passports / photo IDs", "Phone chargers", "Sunscreen", "Comfortable walking shoes", "Refillable water bottles", "Light jacket"]
+  }
+ ],
  "days": [
   {
    "id": "day1",
@@ -853,6 +860,12 @@ const PACK_TEMPLATES = [{
   label: "Travel health kit",
   items: ["Prescriptions in carry-on", "Ibuprofen / paracetamol", "Imodium", "Band-aids + blister pads", "Motion-sickness bands", "Hand sanitizer", "Electrolyte packets", "Allergy meds"]
 }].filter(tp => !tp.cruise || IS_CRUISE);
+const _packOk = tp => tp && typeof tp === "object" && !Array.isArray(tp) && typeof tp.label === "string" && tp.label.trim() && Array.isArray(tp.items) && tp.items.length > 0 && tp.items.every(x => typeof x === "string" && x.trim());
+const PACK_SOURCE = Array.isArray(TRIP.packing) && TRIP.packing.length && TRIP.packing.every(_packOk) ? TRIP.packing.map(tp => ({
+  emoji: typeof tp.emoji === "string" && tp.emoji ? tp.emoji : "🧳",
+  label: tp.label,
+  items: tp.items
+})) : PACK_TEMPLATES;
 const _MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const _md = iso => {
   const p = String(iso).split('-');
@@ -1460,14 +1473,6 @@ function dayWhenText(dayId, hhmm) {
   }
   return out;
 }
-const VTZ_NY = ["BEGIN:VTIMEZONE", "TZID:America/New_York", "BEGIN:DAYLIGHT", "TZOFFSETFROM:-0500", "TZOFFSETTO:-0400", "TZNAME:EDT", "DTSTART:20070311T020000", "RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=2SU", "END:DAYLIGHT", "BEGIN:STANDARD", "TZOFFSETFROM:-0400", "TZOFFSETTO:-0500", "TZNAME:EST", "DTSTART:20071104T020000", "RRULE:FREQ=YEARLY;BYMONTH=11;BYDAY=1SU", "END:STANDARD", "END:VTIMEZONE"];
-const VTZ_CHI = ["BEGIN:VTIMEZONE", "TZID:America/Chicago", "BEGIN:DAYLIGHT", "TZOFFSETFROM:-0600", "TZOFFSETTO:-0500", "TZNAME:CDT", "DTSTART:20070311T020000", "RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=2SU", "END:DAYLIGHT", "BEGIN:STANDARD", "TZOFFSETFROM:-0500", "TZOFFSETTO:-0600", "TZNAME:CST", "DTSTART:20071104T020000", "RRULE:FREQ=YEARLY;BYMONTH=11;BYDAY=1SU", "END:STANDARD", "END:VTIMEZONE"];
-const VTZ_AMS = ["BEGIN:VTIMEZONE", "TZID:Europe/Amsterdam", "BEGIN:DAYLIGHT", "TZOFFSETFROM:+0100", "TZOFFSETTO:+0200", "TZNAME:CEST", "DTSTART:19700329T020000", "RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU", "END:DAYLIGHT", "BEGIN:STANDARD", "TZOFFSETFROM:+0200", "TZOFFSETTO:+0100", "TZNAME:CET", "DTSTART:19701025T030000", "RRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU", "END:STANDARD", "END:VTIMEZONE"];
-const VTZ = {
-  "America/New_York": VTZ_NY,
-  "America/Chicago": VTZ_CHI,
-  "Europe/Amsterdam": VTZ_AMS
-};
 const DEFAULT_TZ = typeof TRIP.tz === "string" && TRIP.tz ? TRIP.tz : "America/New_York";
 const DAY_TZ = {};
 const ACT_TZ = {};
@@ -1507,14 +1512,9 @@ function icsEvent({
   return L;
 }
 function icsWrap(eventLines, tzList) {
+  // No embedded VTIMEZONE blocks: events carry DTSTART;TZID=<iana-zone> and
+  // calendar apps resolve IANA ids themselves (tzList kept for call sites).
   const head = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//TripDashboard//EN", "CALSCALE:GREGORIAN"];
-  const uniq = [];
-  (tzList || []).forEach(t => {
-    if (t && uniq.indexOf(t) < 0) uniq.push(t);
-  });
-  uniq.forEach(t => {
-    if (VTZ[t]) head.push(...VTZ[t]);
-  });
   return head.concat(eventLines, ["END:VCALENDAR"]).join("\r\n");
 }
 function downloadICSDoc(filename, text) {
@@ -5972,7 +5972,7 @@ function App() {
       flexWrap: "wrap",
       gap: 6
     }
-  }, PACK_TEMPLATES.map(tp => React.createElement("button", {
+  }, PACK_SOURCE.map(tp => React.createElement("button", {
     key: tp.label,
     onClick: () => addPackingBulk(tp.items),
     style: {
