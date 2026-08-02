@@ -138,6 +138,12 @@ object, no fences, no commentary,"* and it'll fix it.
 
 ## Step 3 — Put it into the app
 
+**Already running on a server with the admin console enabled?** That's the easy path:
+open `/admin.html` on your dashboard, scroll to **Trip Setup**, paste the AI's JSON,
+hit **Validate**, then **Import**. Done — no files, no restart, and PINs/votes are kept
+for travelers whose names stay the same. (See `ADMIN.md` for enabling the console.)
+The steps below are for the local/first-time route, and they still work everywhere.
+
 **A. Save the AI's answer as a file named `my-trip.json`**, in the app folder (the same
 folder as this file). Any editor works — e.g. paste it into Notepad, then *File → Save As*,
 type `my-trip.json` as the name. (If Windows saved it as `my-trip.json.txt`, rename it.)

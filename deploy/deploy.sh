@@ -19,6 +19,7 @@ $SSH "$SERVER" "mkdir -p ${APP_DIR}/public"
 
 echo "==> copying app files (no node_modules, no data.db, no *.backup-* files)"
 $SCP server.js package.json package-lock.json ecosystem.config.js "${SERVER}:${APP_DIR}/"
+$SCP -r tools "${SERVER}:${APP_DIR}/"   # server requires tools/lib/validate.js since the trip-import feature
 STAGE="$(mktemp -d)"
 cp -r public "$STAGE/public"
 find "$STAGE/public" -name '*.backup-*' -type f -delete

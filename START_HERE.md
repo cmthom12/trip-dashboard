@@ -21,22 +21,28 @@ Everything is data, not code. Open one file, find one block, and type your trip 
 👉 See the **"Make it your trip"** section of [`README.md`](README.md).
 
 ### Want it on paper?
-Prefer something printable to read away from the screen? See **[`QUICK_START.pdf`](QUICK_START.pdf)** —
-the same essentials on a single page.
+Prefer reading away from the screen? Print **[`KICKSTART.md`](KICKSTART.md)** — the complete
+from-zero walkthrough, Windows-first.
 
 ---
 
 ### Then: try it, then put it online
-1. **Try it on your computer first.** In a terminal, in this folder:
+1. **Try it on your computer first.**
+
+   **Windows — no terminal needed:** double-click **`Setup.bat`** once, then
+   **`Start-Dashboard.bat`** — your browser opens the dashboard. The full from-zero
+   walkthrough (downloading the zip, the folder-in-a-folder trap, installing your own
+   trip with `Apply-Trip.bat`) is **[`KICKSTART.md`](KICKSTART.md)**.
+
+   **Mac / Linux** — or if the launchers don't work — in a terminal, in this folder:
    ```
    npm install
    npm start
    ```
-   Open **http://localhost:3000**. Log in as any traveler and pick a 4-digit PIN.
-   *(You'll need Node.js 24 installed first — get it free at nodejs.org.)*
+   Open **http://localhost:3000**. *(You'll need Node.js 24 installed first — get it
+   free at nodejs.org.)*
 
-   **On Windows you can skip the terminal entirely:** double-click `Setup.bat` once, then
-   `Start-Dashboard.bat`. The full from-zero walkthrough is **[`KICKSTART.md`](KICKSTART.md)**.
+   Either way: log in as any traveler and pick a 4-digit PIN.
 
 2. **Put it online for the family** when you're happy with it. A complete step-by-step
    deploy kit — including turning on **HTTPS** (the padlock) — is in the **`deploy/`** folder.

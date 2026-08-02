@@ -68,6 +68,18 @@ h2{font-size:14px;color:#0D2B4E;margin:18px 0 8px}
     <div class="card" id="globals"></div>
     <h2>Backups on server</h2>
     <div class="card" id="backups"></div>
+    <h2>Trip Setup</h2>
+    <div class="card">
+      <div class="gl"><span>Active trip</span><b id="tripActive">&mdash;</b></div>
+      <p style="font-size:13px;margin:10px 0 8px">Paste a complete trip-data JSON below (see BUILD_WITH_AI.md), hit Validate, then Import. Importing replaces the trip for everyone; PINs and votes for names that stay in the family are kept.</p>
+      <textarea id="tripJson" rows="8" style="width:100%;font-family:ui-monospace,Consolas,monospace;font-size:12px;border:1px solid #D1D5DB;border-radius:10px;padding:10px;resize:vertical" spellcheck="false" placeholder='{"trip": { ... }, "family": [ ... ], ... }'></textarea>
+      <div class="actions">
+        <button class="primary" id="tripValidateBtn">Validate</button>
+        <button class="gold" id="tripImportBtn" disabled>Import&hellip;</button>
+        <button id="tripExportBtn" style="margin-left:auto">Export current</button>
+      </div>
+      <div id="tripReport" style="margin-top:10px"></div>
+    </div>
     <div class="hint">Reset PIN: clears that person's PIN and signs out their devices; they simply pick a new PIN at next sign-in. Remove: same, plus clears any login lockout. Neither touches votes, notes or lists.</div>
   </div>
 </div>
@@ -166,7 +178,75 @@ h2{font-size:14px;color:#0D2B4E;margin:18px 0 8px}
           return '<div class="gl"><span>' + esc(b.file) + '</span><b>' + fmtBytes(b.sizeBytes) + ' · ' + esc(b.mtime.slice(0, 16).replace('T', ' ')) + '</b></div>';
         }).join('')
       : '<div class="gl"><span>No backup files found next to data.db.</span></div>';
+    $('tripActive').textContent = (trip.title || '?') + ' (' + (trip.startDate || '?') + ' to ' + (trip.endDate || '?') + ', v' + (trip.version || '?') + ')';
   }
+
+  // ── Trip Setup ─────────────────────────────────────────────────────────────
+  var validatedTrip = null; // the parsed JSON that last passed Validate
+
+  function findingList(items, cls, mark) {
+    if (!items || !items.length) return '';
+    return items.map(function (msg) {
+      return '<div style="font-size:12px;padding:3px 0;color:' + (cls === 'err' ? '#B91C1C' : '#854D0E') + '">' + mark + ' ' + esc(msg) + '</div>';
+    }).join('');
+  }
+
+  $('tripValidateBtn').addEventListener('click', function () {
+    validatedTrip = null;
+    $('tripImportBtn').disabled = true;
+    var d;
+    try { d = JSON.parse($('tripJson').value); }
+    catch (e) {
+      $('tripReport').innerHTML = findingList(['Not valid JSON: ' + e.message + ' — paste only the JSON object, no code fences or commentary.'], 'err', '✗');
+      return;
+    }
+    api('/api/trip/validate', { method: 'POST', body: d }).then(function (j) {
+      var s = j.summary || {};
+      var head = j.ok
+        ? '<div class="gl"><span>✓ Looks good</span><b>' + esc(s.title || '?') + '</b></div>'
+          + '<div class="gl"><span>Dates</span><b>' + esc((s.startDate || '?') + ' to ' + (s.endDate || '?')) + '</b></div>'
+          + '<div class="gl"><span>Contents</span><b>' + s.travelers + ' travelers &middot; ' + s.days + ' days &middot; ' + s.activities + ' activities</b></div>'
+          + '<div class="gl"><span>Planners</span><b>' + esc(s.planners ? s.planners.join(', ') : 'everyone') + '</b></div>'
+        : '<div style="font-size:13px;font-weight:700;color:#B91C1C;margin-bottom:4px">Fix these before importing:</div>';
+      $('tripReport').innerHTML = head + findingList(j.errors, 'err', '✗') + findingList(j.warnings, 'warn', '⚠');
+      if (j.ok) { validatedTrip = d; $('tripImportBtn').disabled = false; }
+    }).catch(function (e) { if (!(e && e.handled)) flash((e && e.msg) || 'Validation failed', true); });
+  });
+
+  $('tripImportBtn').addEventListener('click', function () {
+    if (!validatedTrip) return;
+    fetch('/api/trip').then(function (r) { return r.ok ? r.json() : null; }).catch(function () { return null; }).then(function (cur) {
+      var lines = ['Import "' + ((validatedTrip.trip || {}).title || '?') + '" and replace the current trip for EVERYONE?', '',
+        'PINs and votes are kept for travelers whose names stay the same. Names not in the new trip can no longer sign in.'];
+      if (cur) {
+        var oldIds = [], newIds = [];
+        (cur.days || []).forEach(function (d) { (d.activities || []).forEach(function (a) { if (a.id) oldIds.push(a.id); }); });
+        (validatedTrip.days || []).forEach(function (d) { (d.activities || []).forEach(function (a) { if (a.id) newIds.push(a.id); }); });
+        var kept = oldIds.filter(function (id) { return newIds.indexOf(id) >= 0; }).length;
+        if (oldIds.length && kept < oldIds.length / 2) {
+          lines.push('', '⚠ ' + (oldIds.length - kept) + ' of ' + oldIds.length + ' current activity ids disappear in the new trip — votes on them will be orphaned (harmless but gone from view).');
+        }
+      }
+      if (!window.confirm(lines.join('\n'))) return;
+      $('tripImportBtn').disabled = true;
+      api('/api/trip', { method: 'POST', body: validatedTrip }).then(function (j) {
+        flash('Trip imported — now version ' + j.version + (j.warnings && j.warnings.length ? ' (' + j.warnings.length + ' warnings, see Validate output)' : ''));
+        validatedTrip = null;
+        $('tripJson').value = '';
+        $('tripReport').innerHTML = '';
+        load();
+      }).catch(function (e) { if (!(e && e.handled)) { $('tripImportBtn').disabled = false; flash((e && e.msg) || 'Import failed', true); } });
+    });
+  });
+
+  $('tripExportBtn').addEventListener('click', function () {
+    var a = document.createElement('a');
+    a.href = '/api/trip/export';
+    a.download = 'trip-data.json';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  });
 
   function load() {
     api('/api/admin/overview').then(render).catch(function (e) {

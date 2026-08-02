@@ -48,13 +48,27 @@ What you can do:
   themselves out five times" day. Content is retained.
 - **Backup now** — writes a SQLite-safe snapshot named
   `data.db.backup-admin-<timestamp>` next to `data.db` and lists it in the panel.
+- **Trip Setup** — paste a complete trip-data JSON (the one your AI produced via
+  `BUILD_WITH_AI.md`), **Validate** (same checks as the CLI validator, in plain
+  English), then **Import**. The new trip goes live for everyone immediately —
+  no restart, no file editing. PINs, votes, notes and lists are kept for travelers
+  whose names stay the same; names missing from the new trip can no longer sign
+  in (their data is retained); new names simply register at first login. Every
+  import is kept as a version in the database, and **Export current** downloads
+  the active trip JSON any time. Optional trip-JSON keys the import understands:
+  `"planners": ["Name", …]` (who may edit the Day Plan — everyone if absent) and
+  `"tz": "Europe/Rome"` (the trip's display timezone).
 
-Both destructive buttons require typing the traveler's name to confirm.
+Both destructive buttons require typing the traveler's name to confirm; Import
+shows a confirmation spelling out exactly what changes.
 
 ## Notes
 
 - The admin API lives under `/api/admin/*` and never touches the family-facing
   routes or their token auth.
+- Admins deliberately get **no** location powers: no forcing someone's sharing
+  on, no reading positions without being a signed-in family member, no history
+  to inspect (none is stored). Location sharing belongs to each traveler alone.
 - The page isn't linked from the app; family members won't stumble into it, but
   the only real protection is the key — treat it like a password.
 - `scripts/SERVER_OPS.md` (if present) covers nightly automated backups; the

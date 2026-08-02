@@ -31,16 +31,19 @@ Sample travelers: **Alex, Sam, Jordan, Riley, Casey**. Sample trip: a 4-day
 ---
 
 ## Quick start (run it locally)
+
+**Windows — no terminal needed:** double-click **`Setup.bat`** once, then
+**`Start-Dashboard.bat`** (starts the server and opens the browser; close its window to
+stop). **`Apply-Trip.bat`** installs your own trip data — see
+[`KICKSTART.md`](KICKSTART.md) for the full beginner walkthrough, including the zip
+folder-in-a-folder trap and what to do if the launchers don't work.
+
+**Mac / Linux (or any terminal):**
 ```bash
 npm install
 npm start
 ```
 Then open **http://localhost:3000**.
-
-**Windows, no terminal needed:** double-click **`Setup.bat`** once, then
-**`Start-Dashboard.bat`** (starts the server and opens the browser; close its window to
-stop). **`Apply-Trip.bat`** installs your own trip data — see
-[`KICKSTART.md`](KICKSTART.md) for the full beginner walkthrough.
 
 First login: pick any sample traveler (Alex/Sam/Jordan/Riley/Casey) and choose a
 4-digit PIN — that PIN is set on first use. Use a different browser/profile to log in
@@ -112,6 +115,22 @@ trip-dashboard-template/
 - `data.db` is created automatically on first run, in the project folder.
 - Deploys/updates **never overwrite `data.db`** — back it up by copying the file.
 - To reset to an empty dashboard, stop the server, delete `data.db`, start again.
+
+## Live location (optional)
+The Map tab has a **"Share my location"** toggle so the family can see where
+everyone is during the trip — useful for "where did Dad wander off to" moments.
+How it works, and what it deliberately does **not** do:
+
+- **Off by default**, per person, per device, per visit. Nothing is shared until
+  you flip the toggle, and closing the app stops updates.
+- **Last known position only.** The server keeps exactly one dot per person and
+  never stores a history or track. Positions older than **30 minutes** are
+  deleted automatically.
+- While sharing, a green **"📍 Sharing your location"** chip stays visible on
+  every tab — tapping it stops sharing and removes your dot immediately.
+- Updates flow **only while the app is open** (a browser rule, not a setting),
+  at most every 45 seconds or when you've moved ~100 m.
+- Only signed-in family members can see the dots; the map data is never public.
 
 ---
 

@@ -5,7 +5,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const app = express();
 
-app.use(express.json());
+app.use(express.json({ limit: '2mb' })); // trip-data imports can exceed the 100kb default
 app.use(express.static(path.join(__dirname, 'public')));
 
 const db = new Database(path.join(__dirname, 'data.db'));
@@ -86,7 +86,7 @@ app.use((req, res, next) => {
 const ADMIN_KEY = process.env.ADMIN_KEY || '';
 const ADMIN_FAILS = { count: 0, until: 0 }; // in-memory lockout, same pattern as LOGIN_FAILS
 const _adminDigest = s => crypto.createHash('sha256').update(String(s)).digest();
-app.use('/api/admin', (req, res, next) => {
+const adminGate = (req, res, next) => {
   if (!ADMIN_KEY) return res.status(404).json({ error: 'Not found' }); // disabled: admin is invisible
   const now = Date.now();
   if (ADMIN_FAILS.until > now) return res.status(429).json({ error: 'Too many attempts', retryMs: ADMIN_FAILS.until - now });
@@ -98,35 +98,118 @@ app.use('/api/admin', (req, res, next) => {
   }
   ADMIN_FAILS.count = 0; ADMIN_FAILS.until = 0;
   next();
+};
+app.use('/api/admin', adminGate);
+
+// ── TRIP CONFIG: the active trip lives in the db; POST /api/trip (admin) imports a new one. ──
+db.exec(`CREATE TABLE IF NOT EXISTS trip_config (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, json TEXT, version INTEGER,
+  updated_by TEXT, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+)`);
+// Boot migration: first start after this upgrade seeds version 1 from the inline
+// trip-data block, so existing deployments keep their trip with zero manual steps.
+try {
+  if (!db.prepare('SELECT COUNT(*) AS c FROM trip_config').get().c) {
+    const _html = fs.readFileSync(path.join(__dirname, 'public', 'index.html'), 'utf8');
+    const _m = _html.match(/<script type="application\/json" id="trip-data">\s*([\s\S]*?)<\/script>/);
+    db.prepare('INSERT INTO trip_config (json, version, updated_by) VALUES (?, 1, ?)')
+      .run(JSON.stringify(JSON.parse(_m[1])), 'boot-seed');
+    console.log('trip_config: seeded version 1 from the inline trip-data block');
+  }
+} catch (e) { console.error('trip_config boot seed failed:', e.message); }
+
+let _tripCache; // undefined = not loaded yet; null = table empty
+function activeTrip() {
+  if (_tripCache === undefined) {
+    try {
+      const row = db.prepare('SELECT json FROM trip_config ORDER BY version DESC, id DESC LIMIT 1').get();
+      _tripCache = row ? JSON.parse(row.json) : null;
+    } catch (e) { _tripCache = null; }
+  }
+  return _tripCache;
+}
+const activeTripVersion = () => { try { return db.prepare('SELECT MAX(version) AS v FROM trip_config').get().v || 0; } catch (e) { return 0; } };
+
+// Name lists derive from the active trip. The hardcoded ALLOWED/PLANNERS literals
+// below are ONLY the fallback for an empty trip_config (fresh checkout, seed failed).
+// Writers are still trusted solely by their token — only membership became dynamic.
+const allowedNames = () => {
+  const t = activeTrip();
+  return t && Array.isArray(t.family) && t.family.length ? t.family.map(f => String(f.name)) : ALLOWED;
+};
+const plannerNames = () => {
+  const t = activeTrip();
+  if (!t) return PLANNERS;
+  const fam = allowedNames();
+  return Array.isArray(t.planners) && t.planners.length ? t.planners.filter(n => fam.includes(n)) : fam;
+};
+
+app.get('/api/trip', (req, res) => {
+  const t = activeTrip();
+  if (!t) return res.status(404).json({ error: 'No trip configured' });
+  res.json(t);
+});
+app.get('/api/trip/export', (req, res) => {
+  const t = activeTrip();
+  if (!t) return res.status(404).json({ error: 'No trip configured' });
+  res.setHeader('Content-Disposition', 'attachment; filename="trip-data.json"');
+  res.setHeader('Content-Type', 'application/json');
+  res.send(JSON.stringify(t, null, 1));
 });
 
-// Trip title/dates for the overview panel, parsed once from the trip-data block.
-let TRIP_META = { title: '', startDate: '', endDate: '' };
-try {
-  const _html = fs.readFileSync(path.join(__dirname, 'public', 'index.html'), 'utf8');
-  const _m = _html.match(/<script type="application\/json" id="trip-data">\s*([\s\S]*?)<\/script>/);
-  const _t = (JSON.parse(_m[1]).trip) || {};
-  TRIP_META = { title: _t.title || '', startDate: _t.startDate || '', endDate: _t.endDate || '' };
-} catch (e) {}
+const { validateTripData } = require('./tools/lib/validate.js');
+const _tripFindings = v => ({
+  errors: v.findings.filter(f => f.type === 'err').map(f => f.msg),
+  warnings: v.findings.filter(f => f.type === 'warn').map(f => f.msg)
+});
+app.post('/api/trip/validate', adminGate, (req, res) => {
+  const d = req.body;
+  if (!d || typeof d !== 'object' || Array.isArray(d)) return res.status(400).json({ ok: false, errors: ['Body must be the trip-data JSON object'], warnings: [] });
+  const v = validateTripData(d);
+  res.json({ ok: v.errors === 0, ...(_tripFindings(v)), summary: v.summary });
+});
+app.post('/api/trip', adminGate, (req, res) => {
+  const d = req.body;
+  if (!d || typeof d !== 'object' || Array.isArray(d)) return res.status(400).json({ ok: false, errors: ['Body must be the trip-data JSON object'], warnings: [] });
+  const v = validateTripData(d);
+  const f = _tripFindings(v);
+  if (v.errors) return res.status(400).json({ ok: false, ...f });
+  const version = activeTripVersion() + 1;
+  db.prepare('INSERT INTO trip_config (json, version, updated_by) VALUES (?, ?, ?)')
+    .run(JSON.stringify(d), version, 'admin');
+  _tripCache = d; // refresh the cache: name lists and GET /api/trip switch immediately
+  res.json({ ok: true, version, warnings: f.warnings });
+});
 
 app.get('/api/admin/overview', (req, res) => {
-  const votesBy = {};
-  db.prepare('SELECT names FROM interests').all().forEach(r => {
-    try { JSON.parse(r.names).forEach(n => { votesBy[n] = (votesBy[n] || 0) + 1; }); } catch (e) {}
+  // interests entries are "Name|stars" strings (see intParse in index.html), with
+  // legacy bare names possible — mirror the client's parse rule exactly.
+  const votesBy = {}, lastVoteBy = {};
+  db.prepare('SELECT names, updated_at FROM interests').all().forEach(r => {
+    try {
+      JSON.parse(r.names).forEach(e => {
+        let n = String(e);
+        const i = n.lastIndexOf('|');
+        if (i >= 0) { const st = parseInt(n.slice(i + 1), 10); if (st >= 1 && st <= 3) n = n.slice(0, i); }
+        votesBy[n] = (votesBy[n] || 0) + 1;
+        // proxy timestamp: the row's updated_at (bumped whenever anyone votes on that activity)
+        if (r.updated_at && (!lastVoteBy[n] || r.updated_at > lastVoteBy[n])) lastVoteBy[n] = r.updated_at;
+      });
+    } catch (e) {}
   });
   const _cnt = (sql, n) => db.prepare(sql).get(n).c;
-  const travelers = ALLOWED.map(name => ({
+  const travelers = allowedNames().map(name => ({
     name,
     registered: !!db.prepare('SELECT name FROM users WHERE name = ?').get(name),
-    planner: PLANNERS.includes(name),
-    lastActivity: db.prepare(`SELECT MAX(t) AS t FROM (
+    planner: plannerNames().includes(name),
+    lastActivity: [db.prepare(`SELECT MAX(t) AS t FROM (
       SELECT MAX(created_at) AS t FROM user_tokens WHERE name = @n
       UNION ALL SELECT MAX(created_at) FROM notes WHERE author = @n
       UNION ALL SELECT MAX(created_at) FROM suggestions WHERE author = @n
       UNION ALL SELECT MAX(created_at) FROM day_schedule WHERE created_by = @n
       UNION ALL SELECT MAX(created_at) FROM reservations WHERE created_by = @n
       UNION ALL SELECT MAX(created_at) FROM packing WHERE who = @n
-    )`).get({ n: name }).t || null,
+    )`).get({ n: name }).t, lastVoteBy[name]].filter(Boolean).sort().pop() || null,
     counts: {
       votes: votesBy[name] || 0,
       notes: _cnt('SELECT COUNT(*) AS c FROM notes WHERE author = ?', name),
@@ -136,7 +219,7 @@ app.get('/api/admin/overview', (req, res) => {
   }));
   const rows = {};
   ['users', 'user_tokens', 'interests', 'flight_status', 'notes', 'suggestions',
-   'reservations', 'packing', 'day_schedule', 'processed_ops'].forEach(t => {
+   'reservations', 'packing', 'day_schedule', 'processed_ops', 'trip_config'].forEach(t => {
     rows[t] = db.prepare('SELECT COUNT(*) AS c FROM ' + t).get().c;
   });
   let dbSizeBytes = 0;
@@ -148,7 +231,10 @@ app.get('/api/admin/overview', (req, res) => {
       return { file: f, mtime: st.mtime.toISOString(), sizeBytes: st.size };
     }).sort((a, b) => b.mtime.localeCompare(a.mtime));
   } catch (e) {}
-  res.json({ travelers, trip: TRIP_META, db: { sizeBytes: dbSizeBytes, rows }, backups });
+  const _t = (activeTrip() || {}).trip || {};
+  res.json({ travelers,
+    trip: { title: _t.title || '', startDate: _t.startDate || '', endDate: _t.endDate || '', version: activeTripVersion() },
+    db: { sizeBytes: dbSizeBytes, rows }, backups });
 });
 
 // Clears the login credential only: the user's PIN row + every session token.
@@ -162,7 +248,7 @@ const _adminClearCred = name => db.transaction(() => {
 
 app.post('/api/admin/reset-pin', (req, res) => {
   const name = (req.body || {}).name;
-  if (!ALLOWED.includes(name)) return res.status(400).json({ error: 'Unknown name' });
+  if (!allowedNames().includes(name)) return res.status(400).json({ error: 'Unknown name' });
   const out = _adminClearCred(name);
   res.json({ ok: true, name, hadPin: out.hadPin, tokensRevoked: out.tokensRevoked,
     message: 'PIN cleared — ' + name + ' sets a fresh PIN at next sign-in. Their votes, notes and lists are untouched.' });
@@ -170,7 +256,7 @@ app.post('/api/admin/reset-pin', (req, res) => {
 
 app.post('/api/admin/remove-user', (req, res) => {
   const name = (req.body || {}).name;
-  if (!ALLOWED.includes(name)) return res.status(400).json({ error: 'Unknown name' });
+  if (!allowedNames().includes(name)) return res.status(400).json({ error: 'Unknown name' });
   const out = _adminClearCred(name);
   delete LOGIN_FAILS[name];
   res.json({ ok: true, name, hadPin: out.hadPin, tokensRevoked: out.tokensRevoked, lockoutCleared: true,
@@ -197,12 +283,12 @@ app.use((req, res, next) => {
   next();
 });
 const hashPin = pin => crypto.createHash('sha256').update(String(pin)).digest('hex');
-const ALLOWED = ["Alex","Sam","Jordan","Riley","Casey"];
+const ALLOWED = ["Alex","Sam","Jordan","Riley","Casey"]; // fallback only — see allowedNames()
 const LOGIN_FAILS = {}; // name -> { count, until } : in-memory brute-force lockout
 
 app.post('/api/login', (req, res) => {
   const { name, pin } = req.body;
-  if (!ALLOWED.includes(name)) return res.status(400).json({ error: 'Unknown name' });
+  if (!allowedNames().includes(name)) return res.status(400).json({ error: 'Unknown name' });
   if (!/^\d{4}$/.test(String(pin || ''))) return res.status(400).json({ error: 'PIN must be 4 digits' });
   const _now = Date.now();
   const _lk = LOGIN_FAILS[name];
@@ -309,9 +395,9 @@ app.post('/api/reservations', (req, res) => {
   const newId = db.transaction(() => {
     const r = db.prepare('INSERT INTO reservations (title, when_text, confirmation, who, notes, created_by) VALUES (?, ?, ?, ?, ?, ?)')
       .run(String(title).slice(0,160), String(when||'').slice(0,120), String(conf||'').slice(0,120), String(who||'').slice(0,120), String(notes||'').slice(0,400), String(author||''));
-    if (dayId && PLANNERS.includes(author)) {
+    if (dayId && plannerNames().includes(author)) {
       db.prepare('INSERT INTO day_schedule (day_id, activity_id, title, time_text, who, created_by, res_id) VALUES (?, ?, ?, ?, ?, ?, ?)')
-        .run(String(dayId).slice(0,20), '', String(title).slice(0,160), String(planTime||'').slice(0,10), JSON.stringify(ALLOWED), String(author||''), r.lastInsertRowid);
+        .run(String(dayId).slice(0,20), '', String(title).slice(0,160), String(planTime||'').slice(0,10), JSON.stringify(allowedNames()), String(author||''), r.lastInsertRowid);
     }
     return r.lastInsertRowid;
   })();
@@ -320,7 +406,7 @@ app.post('/api/reservations', (req, res) => {
 app.delete('/api/reservations/:id', (req, res) => {
   const paired = db.prepare('SELECT COUNT(*) AS c FROM day_schedule WHERE res_id = ? OR activity_id = ?')
     .get(req.params.id, 'res:' + req.params.id).c > 0;
-  if (paired && !PLANNERS.includes(req.authUser)) {
+  if (paired && !plannerNames().includes(req.authUser)) {
     return res.status(403).json({ error: 'This booking is on the day plan — only trip planners can delete it' });
   }
   db.transaction(() => {
@@ -361,16 +447,17 @@ try { db.exec(`UPDATE reservations SET created_by = (
   ORDER BY ds.id LIMIT 1
 ) WHERE created_by IS NULL`); } catch (e) {}
 // (template: no trip-specific seed data)
-const PLANNERS = ["Alex", "Sam", "Jordan", "Riley", "Casey"];
+const PLANNERS = ["Alex", "Sam", "Jordan", "Riley", "Casey"]; // fallback only — see plannerNames()
 app.get('/api/schedule', (req, res) => {
   res.json(db.prepare('SELECT * FROM day_schedule ORDER BY day_id ASC, time_text ASC, id ASC').all()); 
 });
 app.post('/api/schedule', (req, res) => {
   const { dayId, activityId, title, time, who, whenText, resId } = req.body;
   const author = req.authUser;
-  if (!PLANNERS.includes(author)) return res.status(403).json({ error: 'Only trip planners can edit the day plan' });
+  if (!plannerNames().includes(author)) return res.status(403).json({ error: 'Only trip planners can edit the day plan' });
   if (!dayId || !title || !Array.isArray(who) || who.length === 0) return res.status(400).json({ error: 'Invalid' });
-  const cleanWho = who.filter(n => ALLOWED.includes(n));
+    const _fam = allowedNames();
+  const cleanWho = who.filter(n => _fam.includes(n));
   if (cleanWho.length === 0) return res.status(400).json({ error: 'Invalid members' });
   if (resId && !db.prepare('SELECT id FROM reservations WHERE id = ?').get(resId)) return res.status(400).json({ error: 'Booking not found' });
   const out = db.transaction(() => {
@@ -389,12 +476,13 @@ app.post('/api/schedule', (req, res) => {
 });
 app.patch('/api/schedule/:id', (req, res) => {
   const { who, time, whenText } = req.body;
-  if (!PLANNERS.includes(req.authUser)) return res.status(403).json({ error: 'Only trip planners can edit the day plan' });
+  if (!plannerNames().includes(req.authUser)) return res.status(403).json({ error: 'Only trip planners can edit the day plan' });
   const row = db.prepare('SELECT * FROM day_schedule WHERE id = ?').get(req.params.id);
   if (!row) return res.status(404).json({ error: 'Not found' });
   if (who !== undefined) {
     if (!Array.isArray(who)) return res.status(400).json({ error: 'Invalid' });
-    const cleanWho = who.filter(n => ALLOWED.includes(n));
+      const _fam = allowedNames();
+  const cleanWho = who.filter(n => _fam.includes(n));
     if (cleanWho.length === 0) return res.status(400).json({ error: 'Invalid members' });
     db.prepare('UPDATE day_schedule SET who = ? WHERE id = ?').run(JSON.stringify(cleanWho), row.id);
   }
@@ -403,7 +491,7 @@ app.patch('/api/schedule/:id', (req, res) => {
   res.json({ ok: true });
 });
 app.delete('/api/schedule/:id', (req, res) => {
-  if (!PLANNERS.includes(req.authUser)) return res.status(403).json({ error: 'Only trip planners can edit the day plan' });
+  if (!plannerNames().includes(req.authUser)) return res.status(403).json({ error: 'Only trip planners can edit the day plan' });
   const row = db.prepare('SELECT * FROM day_schedule WHERE id = ?').get(req.params.id);
   if (!row) return res.json({ ok: true });
   let resId = row.res_id;
@@ -418,12 +506,49 @@ app.delete('/api/schedule/:id', (req, res) => {
   res.json({ ok: true });
 });
 
+// ── LIVE LOCATION (opt-in): last known position per traveler. NO history table, ever. ──
+db.exec(`CREATE TABLE IF NOT EXISTS locations (
+  name TEXT PRIMARY KEY, lat REAL, lng REAL, acc REAL, updated_at TEXT
+)`);
+const LOC_TTL_MS = 30 * 60 * 1000; // hard expiry: server-side filter is authoritative
+
+app.post('/api/location', (req, res) => {
+  const { lat, lng, acc } = req.body || {};
+  const okNum = (x, lo, hi) => typeof x === 'number' && isFinite(x) && x >= lo && x <= hi;
+  if (!okNum(lat, -90, 90) || !okNum(lng, -180, 180)) return res.status(400).json({ error: 'Invalid coordinates' });
+  if (acc !== undefined && !okNum(acc, 0, 100000)) return res.status(400).json({ error: 'Invalid accuracy' });
+  // name comes from the token (req.authUser) — never from the body
+  db.prepare(`INSERT INTO locations (name, lat, lng, acc, updated_at) VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(name) DO UPDATE SET lat=excluded.lat, lng=excluded.lng, acc=excluded.acc, updated_at=excluded.updated_at`)
+    .run(req.authUser, lat, lng, acc === undefined ? null : acc, new Date().toISOString());
+  res.json({ ok: true });
+});
+
+app.delete('/api/location', (req, res) => {
+  db.prepare('DELETE FROM locations WHERE name = ?').run(req.authUser);
+  res.json({ ok: true });
+});
+
+// Family-only data: the one GET that requires a token (GETs skip the auth middleware).
+app.get('/api/locations', (req, res) => {
+  const tok = req.get('X-Auth-Token');
+  const row = tok ? _tokenUser.get(tok) : null;
+  if (!row) return res.status(401).json({ error: 'Session expired — please sign in again' });
+  const cutoff = Date.now() - LOC_TTL_MS;
+  try { db.prepare('DELETE FROM locations WHERE updated_at < ?').run(new Date(cutoff).toISOString()); } catch (e) {}
+  const out = db.prepare('SELECT * FROM locations').all()
+    .map(r => ({ name: r.name, lat: r.lat, lng: r.lng, acc: r.acc, agoS: Math.round((Date.now() - Date.parse(r.updated_at)) / 1000) }))
+    .filter(r => isFinite(r.agoS) && r.agoS * 1000 <= LOC_TTL_MS);
+  res.json(out);
+});
+
 // Housekeeping: keep the idempotency log from growing forever (drop ops older than 14 days).
 function pruneOps(){ try { db.prepare('DELETE FROM processed_ops WHERE created_at < ?').run(Date.now() - 14*24*60*60*1000); } catch(e){} }
 pruneOps();
 setInterval(pruneOps, 24*60*60*1000);
 
-app.get('/api/health', (req, res) => res.json({ status: 'ok', time: new Date().toISOString() }));
+const APP_VERSION = (() => { try { return require('./package.json').version || ''; } catch (e) { return ''; } })();
+app.get('/api/health', (req, res) => res.json({ status: 'ok', version: APP_VERSION, time: new Date().toISOString() }));
 // Centralized error handler: any uncaught throw in a route lands here as clean JSON
 // (Express 5 forwards both sync throws and rejected async handlers here).
 app.use((err, req, res, next) => {

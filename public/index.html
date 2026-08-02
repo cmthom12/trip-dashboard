@@ -698,6 +698,38 @@ body{background:#F0F2F5;overscroll-behavior:none}
 }
 </script>
 <script>
+(function () {
+  'use strict';
+  var CACHE_KEY = 'tg_trip_cache';
+  function adopt(txt) {
+    try { JSON.parse(txt); } catch (e) { return false; }
+    document.getElementById('trip-data').textContent = txt;
+    return true;
+  }
+  function start() {
+    var s = document.createElement('script');
+    s.textContent = document.getElementById('trip-main').textContent;
+    document.body.appendChild(s);
+  }
+  var ctl = ('AbortController' in window) ? new AbortController() : null;
+  var timer = setTimeout(function () { if (ctl) ctl.abort(); }, 3000);
+  fetch('/api/trip', ctl ? { signal: ctl.signal } : {}).then(function (r) {
+    clearTimeout(timer);
+    if (!r.ok) throw new Error('http ' + r.status);
+    return r.text();
+  }).then(function (txt) {
+    if (adopt(txt)) { try { localStorage.setItem(CACHE_KEY, txt); } catch (e) {} }
+    start();
+  }).catch(function () {
+    clearTimeout(timer);
+    var cached = null;
+    try { cached = localStorage.getItem(CACHE_KEY); } catch (e) {}
+    if (cached) adopt(cached); // offline: last-good trip; else the inline sample stays
+    start();
+  });
+})();
+</script>
+<script type="text/plain" id="trip-main">
 const API = '';
 const OUTBOX_KEY = 'tg_outbox';
 function _obGet() {
@@ -801,19 +833,22 @@ const {
   useCallback
 } = React;
 const TRIP = JSON.parse(document.getElementById('trip-data').textContent);
+const IS_CRUISE = !!(TRIP.trip && typeof TRIP.trip.ship === "string" && TRIP.trip.ship.trim());
 const PACK_TEMPLATES = [{
   emoji: "🧳",
   label: "Cruise basics",
+  cruise: true,
   items: ["Passports + cruise docs wallet", "Phone chargers + EU plug adapters (Type C/F)", "Cruise-safe power strip (non-surge)", "Sunscreen SPF 50", "Sunglasses", "Hats", "Day backpack", "Refillable water bottles", "Motion-sickness tablets", "Lanyards for ship/room cards", "Swimsuits", "Smart-casual evening outfits", "Comfortable walking shoes", "Light jacket for deck nights"]
 }, {
   emoji: "⛰️",
   label: "Shore excursion day",
+  cruise: true,
   items: ["Non-slip walking shoes", "Hat + sunscreen (shore bag)", "Water bottles for shore", "Small local cash", "Ship card + photo ID", "Ear protection (if needed)", "Portable phone battery", "Wet wipes"]
 }, {
   emoji: "💊",
   label: "Travel health kit",
   items: ["Prescriptions in carry-on", "Ibuprofen / paracetamol", "Imodium", "Band-aids + blister pads", "Motion-sickness bands", "Hand sanitizer", "Electrolyte packets", "Allergy meds"]
-}];
+}].filter(tp => !tp.cruise || IS_CRUISE);
 const _MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const _md = iso => {
   const p = String(iso).split('-');
@@ -825,7 +860,7 @@ try {
 } catch (e) {}
 const FAMILY = TRIP.family.map(f => f.name);
 const PCOLOR = Object.fromEntries(TRIP.family.map(f => [f.name, f.color]));
-const PLANNERS = ["Alex", "Sam", "Jordan", "Riley", "Casey"];
+const PLANNERS = Array.isArray(TRIP.planners) && TRIP.planners.length ? TRIP.planners.filter(n => (TRIP.family || []).some(f => f.name === n)) : (TRIP.family || []).map(f => f.name);
 const addedByLabel = n => n && FAMILY.includes(n) ? n : "";
 function intParse(e) {
   if (typeof e !== "string") return {
@@ -928,11 +963,12 @@ const BOOKING_SITES = [{
   url: "https://www.getyourguide.com"
 }, {
   name: "Shore Excursions Group",
-  url: "https://www.shoreexcursionsgroup.com"
+  url: "https://www.shoreexcursionsgroup.com",
+  cruise: true
 }, {
   name: "TripAdvisor",
   url: "https://www.tripadvisor.com"
-}];
+}].filter(s => !s.cruise || IS_CRUISE);
 const DAYS = TRIP.days;
 function linkify(text) {
   return text.split(/(\s+)/).map((tok, i) => {
@@ -1076,7 +1112,7 @@ function Login({
       fontSize: 12,
       marginTop: 6
     }
-  }, fmtRange(TRIP.trip.startDate, TRIP.trip.endDate, false), " \xB7 ", TRIP.trip.ship)), step === "name" && React.createElement(React.Fragment, null, React.createElement("div", {
+  }, fmtRange(TRIP.trip.startDate, TRIP.trip.endDate, false), IS_CRUISE ? " \xB7 " + TRIP.trip.ship : null)), step === "name" && React.createElement(React.Fragment, null, React.createElement("div", {
     style: {
       fontSize: 13,
       fontWeight: 600,
@@ -1354,13 +1390,21 @@ const ICS_MONTHS = {
 };
 const pad2 = n => String(n).padStart(2, "0");
 const icsEsc = s => String(s || "").replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\r?\n/g, "\\n");
+function _tripYearFor(mon2) {
+  const s = String(TRIP.trip && TRIP.trip.startDate || "");
+  const sy = parseInt(s.slice(0, 4), 10);
+  if (!sy) return String(new Date().getFullYear());
+  const ey = parseInt(String(TRIP.trip && TRIP.trip.endDate || "").slice(0, 4), 10) || sy;
+  if (ey > sy && mon2 < s.slice(5, 7)) return String(ey); // trip crosses New Year: early months belong to the end year
+  return String(sy);
+}
 function whenToYMDT(w) {
   if (!w) return null;
   const m = String(w).match(/(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2})/);
   if (!m) return null;
   const _dd = parseInt(m[2], 10);
   if (!(_dd >= 1 && _dd <= 31)) return null;
-  const ymd = "2026" + ICS_MONTHS[m[1]] + pad2(m[2]);
+  const ymd = _tripYearFor(ICS_MONTHS[m[1]]) + ICS_MONTHS[m[1]] + pad2(m[2]);
   const t = String(w).match(/(\d{1,2}):(\d{2})\s*(AM|PM)/i);
   let time = null;
   if (t) {
@@ -1424,7 +1468,7 @@ const VTZ = {
   "Europe/Amsterdam": VTZ_AMS,
   "Europe/Istanbul": VTZ_IST
 };
-const DEFAULT_TZ = "America/New_York";
+const DEFAULT_TZ = typeof TRIP.tz === "string" && TRIP.tz ? TRIP.tz : "America/New_York";
 const DAY_TZ = {};
 const ACT_TZ = {};
 function tzForEvent(dayId, activityId) {
@@ -1697,6 +1741,156 @@ function Row({
     }
   }, d)));
 }
+// ── Live location sharing (opt-in). Plain fetch ONLY — never qfetch/the outbox:
+// a queued stale position replayed later would lie about where someone is.
+// Last known position only; the server expires rows after 30 minutes.
+const LocShare = {
+  on: false,
+  paused: false,
+  note: "",
+  _watchId: null,
+  _last: null,
+  _subs: [],
+  subscribe(fn) {
+    this._subs.push(fn);
+    return () => {
+      this._subs = this._subs.filter(f => f !== fn);
+    };
+  },
+  _emit() {
+    this._subs.forEach(f => {
+      try { f(); } catch (e) {}
+    });
+  },
+  _token() {
+    try { return localStorage.getItem('tg_token') || ""; } catch (e) { return ""; }
+  },
+  _distM(a, b) {
+    const dLat = (b.lat - a.lat) * 111320;
+    const dLng = (b.lng - a.lng) * 111320 * Math.cos((a.lat + b.lat) / 2 * Math.PI / 180);
+    return Math.sqrt(dLat * dLat + dLng * dLng);
+  },
+  _post(pos) {
+    if (!this.on || this.paused || document.hidden) return;
+    const c = pos.coords || {};
+    const cur = { t: Date.now(), lat: c.latitude, lng: c.longitude };
+    if (typeof cur.lat !== "number" || typeof cur.lng !== "number") return;
+    const last = this._last;
+    if (last && cur.t - last.t < 45000 && this._distM(last, cur) <= 100) return; // at most every 45s or >100m
+    this._last = cur;
+    fetch(API + '/api/location', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Auth-Token': this._token() },
+      body: JSON.stringify({ lat: cur.lat, lng: cur.lng, acc: typeof c.accuracy === "number" ? Math.round(c.accuracy) : undefined })
+    }).catch(() => {}); // drop silently; the next tick retries
+  },
+  start() {
+    if (this.on) return;
+    if (!navigator.geolocation) {
+      this.note = "This device doesn't offer location to the browser.";
+      this._emit();
+      return;
+    }
+    this.on = true;
+    this.note = "";
+    this._last = null;
+    this._watchId = navigator.geolocation.watchPosition(p => this._post(p), err => {
+      this.stop(false);
+      this.note = err && err.code === 1 ? "Location permission was denied \u2014 sharing stayed off." : "Couldn't get a location \u2014 sharing turned off.";
+      this._emit();
+    }, {
+      enableHighAccuracy: true,
+      maximumAge: 15000,
+      timeout: 20000
+    });
+    this._emit();
+  },
+  stop(sendDelete) {
+    if (this._watchId !== null && navigator.geolocation) {
+      try { navigator.geolocation.clearWatch(this._watchId); } catch (e) {}
+    }
+    this._watchId = null;
+    const was = this.on;
+    this.on = false;
+    this.paused = false;
+    this._last = null;
+    if (was && sendDelete !== false) {
+      fetch(API + '/api/location', {
+        method: 'DELETE',
+        headers: { 'X-Auth-Token': this._token() }
+      }).catch(() => {}); // stop sharing = disappear immediately
+    }
+    this._emit();
+  }
+};
+document.addEventListener('visibilitychange', () => {
+  LocShare.paused = document.hidden;
+  if (!document.hidden && LocShare.on) LocShare._last = null; // post promptly on return
+});
+function useLocShare() {
+  const [, force] = React.useState(0);
+  useEffect(() => LocShare.subscribe(() => force(x => x + 1)), []);
+  return LocShare;
+}
+function ShareChip() {
+  const ls = useLocShare();
+  if (!ls.on) return null;
+  return React.createElement("div", {
+    onClick: () => ls.stop(),
+    role: "button",
+    title: "Tap to stop sharing your location",
+    style: {
+      background: "#16A34A",
+      color: "#fff",
+      textAlign: "center",
+      fontSize: 12,
+      fontWeight: 800,
+      padding: "6px 12px",
+      cursor: "pointer",
+      letterSpacing: 0.2
+    }
+  }, "\uD83D\uDCCD Sharing your location \u2014 tap to stop");
+}
+function ShareToggle() {
+  const ls = useLocShare();
+  return React.createElement("div", {
+    style: {
+      marginTop: 12,
+      background: "#fff",
+      border: "1px solid #E5E7EB",
+      borderRadius: 12,
+      padding: "10px 12px"
+    }
+  }, React.createElement("label", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 8,
+      cursor: "pointer",
+      fontSize: 13,
+      fontWeight: 700,
+      color: "#0D2B4E"
+    }
+  }, React.createElement("input", {
+    type: "checkbox",
+    checked: ls.on,
+    onChange: e => e.target.checked ? ls.start() : ls.stop()
+  }), "\uD83D\uDCCD Share my location"), React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: "#6B7280",
+      marginTop: 5,
+      lineHeight: 1.5
+    }
+  }, "Others on this trip can see your location while the app is open. Turns off automatically when you're not sharing. Updates only while the app is open \u2014 that's a browser rule, not a bug."), ls.note ? React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: "#B45309",
+      marginTop: 5,
+      fontWeight: 700
+    }
+  }, ls.note) : null);
+}
 function TripMap({
   focus
 }) {
@@ -1837,6 +2031,52 @@ function TripMap({
       } catch (e) {}
     }
   }, [focus]);
+  useEffect(() => {
+    if (!window.L) return;
+    const L = window.L;
+    let stopped = false;
+    const layer = L.layerGroup();
+    if (mapRef.current) layer.addTo(mapRef.current);
+    const FAM_COLOR = {};
+    (TRIP.family || []).forEach(f => {
+      FAM_COLOR[f.name] = Array.isArray(f.color) && f.color[1] ? f.color[1] : "#0D2B4E";
+    });
+    let me = "";
+    try { me = localStorage.getItem('tg_name') || ""; } catch (e) {}
+    const draw = rows => {
+      layer.clearLayers();
+      rows.filter(r => r && r.agoS <= 1800).forEach(r => { // belt+suspenders with the server's 30-min expiry
+        const own = r.name === me;
+        const icon = L.divIcon({
+          className: 'tm-live',
+          html: '<div style="width:22px;height:22px;border-radius:50%;background:' + (FAM_COLOR[r.name] || "#0D2B4E") + ';color:#fff;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;border:2px ' + (own ? 'dashed' : 'solid') + ' #fff;box-shadow:0 1px 5px rgba(0,0,0,.4)">' + String(r.name || '?').charAt(0) + '</div>',
+          iconSize: [22, 22],
+          iconAnchor: [11, 11]
+        });
+        const mins = Math.max(0, Math.round(r.agoS / 60));
+        L.marker([r.lat, r.lng], {
+          icon: icon
+        }).addTo(layer).bindPopup('<b>' + String(r.name).replace(/[<>&]/g, '') + '</b> \xB7 ' + (mins === 0 ? 'just now' : mins + ' min ago') + (r.acc > 100 ? ' (\xB1' + Math.round(r.acc) + ' m)' : ''));
+      });
+    };
+    const poll = () => {
+      let t = "";
+      try { t = localStorage.getItem('tg_token') || ""; } catch (e) {}
+      if (!t) return;
+      fetch(API + '/api/locations', {
+        headers: { 'X-Auth-Token': t }
+      }).then(r => r.ok ? r.json() : []).then(rows => {
+        if (!stopped) draw(rows || []);
+      }).catch(() => {});
+    };
+    poll();
+    const iv = setInterval(poll, 40000); // stops with the interval when the Map tab unmounts
+    return () => {
+      stopped = true;
+      clearInterval(iv);
+      try { layer.remove(); } catch (e) {}
+    };
+  }, []);
   const [mapView, setMapView] = React.useState('days');
   const fit = which => {
     const m = mapRef.current,
@@ -1951,7 +2191,7 @@ function TripMap({
     style: ldot('#1B6CA8')
   }), "Day stop"), React.createElement("span", null, React.createElement("span", {
     style: ldot('#C2410C')
-  }), "Activity")), regionQ && React.createElement("a", {
+  }), "Activity")), React.createElement(ShareToggle, null), regionQ && React.createElement("a", {
     href: "https://www.google.com/maps/search/?api=1&query=" + encodeURIComponent(regionQ),
     target: "_blank",
     rel: "noopener",
@@ -1972,30 +2212,53 @@ function TripMap({
     }
   }, "Pins and route come from your trip data. Map tiles \xA9 OpenStreetMap."));
 }
+function VersionTag() {
+  const [v, setV] = React.useState("");
+  useEffect(() => {
+    fetch(API + "/api/health").then(r => r.json()).then(j => {
+      if (j && j.version) setV(j.version);
+    }).catch(() => {});
+  }, []);
+  if (!v) return null;
+  return React.createElement("span", {
+    style: {
+      color: "#10B981",
+      fontWeight: 700
+    }
+  }, "\xB7 v" + v);
+}
 function Countdown() {
-  const dep = new Date(2026, 5, 23),
-    end = new Date(2026, 6, 5, 23, 59);
-  const now = new Date();
-  const day0 = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  if (now > end) return null;
+  const sISO = String(TRIP.trip && TRIP.trip.startDate || ""),
+    eISO = String(TRIP.trip && TRIP.trip.endDate || "");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(sISO) || !/^\d{4}-\d{2}-\d{2}$/.test(eISO)) return null;
+  let todayISO;
+  try {
+    todayISO = new Intl.DateTimeFormat("en-CA", {
+      timeZone: DEFAULT_TZ
+    }).format(new Date());
+  } catch (e) {
+    todayISO = new Intl.DateTimeFormat("en-CA").format(new Date());
+  }
+  const dUTC = iso => {
+    const p = iso.split("-");
+    return Date.UTC(+p[0], +p[1] - 1, +p[2]);
+  };
+  const today = dUTC(todayISO),
+    dep = dUTC(sISO),
+    end = dUTC(eISO);
+  if (today > end) return null;
+  const total = Math.round((end - dep) / 86400000) + 1;
   let text,
     bg = "#C9A227",
     icon = "✈️";
-  if (now >= dep) {
-    const n = Math.floor((day0 - dep) / 86400000) + 1;
-    text = "You're on the trip — Day " + n + " of 13!";
+  if (today >= dep) {
+    const n = Math.round((today - dep) / 86400000) + 1;
+    text = "You're on the trip — Day " + n + " of " + total + "!";
     bg = "#16A34A";
     icon = "🌊";
   } else {
-    const days = Math.round((dep - day0) / 86400000);
-    if (days === 0) {
-      text = "Departure day — bon voyage!";
-      icon = "🛫";
-    } else if (days === 1) {
-      text = "1 day until the trip!";
-    } else {
-      text = days + " days until the trip!";
-    }
+    const days = Math.round((dep - today) / 86400000);
+    text = days === 1 ? "1 day until the trip!" : days + " days until the trip!";
   }
   return React.createElement("div", {
     style: {
@@ -2011,9 +2274,14 @@ function Countdown() {
 }
 const MISSIONS = TRIP.enrichments.missions;
 function _dayDate(id) {
-  const m = id.indexOf("jun") === 0 ? 5 : 6;
-  const d = parseInt(id.replace(/[^0-9]/g, ""), 10);
-  return new Date(2026, m, d);
+  const dc = DAY_COORDS && DAY_COORDS[id];
+  if (dc && dc.date) {
+    const p = String(dc.date).split("-");
+    return new Date(+p[0], +p[1] - 1, +p[2]);
+  }
+  const s = String(TRIP.trip && TRIP.trip.startDate || "");
+  const d = parseInt(String(id).replace(/[^0-9]/g, ""), 10);
+  return new Date(parseInt(s.slice(0, 4), 10) || new Date().getFullYear(), (parseInt(s.slice(5, 7), 10) || 1) - 1, d || 1);
 }
 function _isToday(id) {
   const a = _dayDate(id),
@@ -2908,7 +3176,7 @@ function PrintItinerary({
     className: "ph-sub"
   }, trip.subtitle), React.createElement("div", {
     className: "ph-meta"
-  }, "Complete Itinerary & Day Plan \xB7 ", fmtRange(trip.startDate, trip.endDate, true), trip.ship ? " · " + trip.ship : "")), days.map((d, di) => {
+  }, "Complete Itinerary & Day Plan \xB7 ", fmtRange(trip.startDate, trip.endDate, true), IS_CRUISE ? " · " + trip.ship : "")), days.map((d, di) => {
     const items = schedule.filter(s => s.day_id === d.id).slice().sort((a, b) => String(a.time_text || "99:99").localeCompare(String(b.time_text || "99:99")));
     const meta = [d.arrival ? "🛬 " + d.arrival : "", d.departure ? "🛫 " + d.departure : ""].filter(Boolean).join("    ");
     return React.createElement("div", {
@@ -3717,7 +3985,8 @@ function App() {
   }, {
     id: "ship",
     label: "Onboard",
-    emoji: "🚢"
+    emoji: "🚢",
+    cruise: true
   }, {
     id: "adventure",
     label: "Adventure",
@@ -3726,7 +3995,7 @@ function App() {
     id: "photo",
     label: "Photos",
     emoji: "📸"
-  }];
+  }].filter(f => !f.cruise || IS_CRUISE);
   const acts = (currentDay?.activities || []).filter(a => {
     if (onlyMine && !(a.who || []).includes(user)) return false;
     if (filter !== "all" && a.cat !== filter) return false;
@@ -3801,12 +4070,7 @@ function App() {
       fontSize: 11,
       marginTop: 1
     }
-  }, TRIP.trip.subtitle, " \xB7 ", fmtRange(TRIP.trip.startDate, TRIP.trip.endDate, true), " ", React.createElement("span", {
-    style: {
-      color: "#10B981",
-      fontWeight: 700
-    }
-  }, "\xB7 v0.3.0"))), React.createElement("div", {
+  }, TRIP.trip.subtitle, " \xB7 ", fmtRange(TRIP.trip.startDate, TRIP.trip.endDate, true), " ", React.createElement(VersionTag, null))), React.createElement("div", {
     style: {
       display: "flex",
       gap: 8,
@@ -3913,7 +4177,7 @@ function App() {
       borderBottom: tab === t.id ? "3px solid #0D2B4E" : "3px solid transparent",
       color: tab === t.id ? "#0D2B4E" : "#6B7280"
     }
-  }, t.label)))), React.createElement(Countdown, null), (() => {
+  }, t.label)))), React.createElement(Countdown, null), React.createElement(ShareChip, null), (() => {
     try {
       const ymd = new Intl.DateTimeFormat("en-CA", {
         timeZone: DEFAULT_TZ
@@ -4122,7 +4386,7 @@ function App() {
       color: "rgba(255,255,255,.6)",
       lineHeight: 1.8
     }
-  }, React.createElement("div", null, "\uD83D\uDEEC ", currentDay.arrival), React.createElement("div", null, "\uD83D\uDEEB ", currentDay.departure))), currentDay.shipNote && React.createElement("div", {
+  }, React.createElement("div", null, "\uD83D\uDEEC ", currentDay.arrival), React.createElement("div", null, "\uD83D\uDEEB ", currentDay.departure))), IS_CRUISE && currentDay.shipNote && React.createElement("div", {
     style: {
       marginTop: 10,
       background: "rgba(255,255,255,.08)",
@@ -4133,7 +4397,7 @@ function App() {
       display: "flex",
       gap: 6
     }
-  }, React.createElement("span", null, "\u2693"), React.createElement("span", null, currentDay.shipNote)), currentDay.allAboard && React.createElement("div", {
+  }, React.createElement("span", null, "\u2693"), React.createElement("span", null, currentDay.shipNote)), IS_CRUISE && currentDay.allAboard && React.createElement("div", {
     style: {
       marginTop: 8,
       background: "rgba(220,38,38,.18)",
@@ -4261,7 +4525,7 @@ function App() {
       marginBottom: 6,
       letterSpacing: .5
     }
-  }, "\uD83C\uDF9F BOOK SHORE EXCURSIONS"), React.createElement("div", {
+  }, "\uD83C\uDF9F " + (IS_CRUISE ? "BOOK SHORE EXCURSIONS" : "BOOK TOURS & ACTIVITIES")), React.createElement("div", {
     style: {
       display: "flex",
       flexWrap: "wrap",
