@@ -92,3 +92,17 @@ See `BUILD_WITH_AI.md` for the full trip-data schema (the canonical reference fo
 Production runs under PM2 (`ecosystem.config.js`, port 3000) behind nginx. The deploy kit lives
 in `deploy/` (`provision.sh` → `deploy.sh` → `setup-https.sh`); see `deploy/DEPLOY.md`. Runtime
 upgrade runbooks (Node 24, Express 5) are under `docs/maintenance/`.
+
+## Autonomous runs & report hygiene
+
+- Session reports and any artifact that quotes live URLs, server IPs, or real family
+  names are written **outside the repo**, to `~/code/_archive/trip-dashboard/`
+  (e.g. `OVERNIGHT_REPORT_<n>.md`). That archive directory is the only permitted write
+  location outside the repo during an autonomous run; the repo working tree stays
+  **audit-clean** at all times — never park such content here "temporarily".
+- Before publishing the public template, run `tools/audit-publish.sh` (exit 0 = clean;
+  nonzero = it prints the offending tracked lines). The script's term list is stored
+  encoded so the script passes its own audit — see the comment inside it before editing.
+- Publish only from a **tag that postdates any leak fix**: git history before the fix
+  still contains the leaked content, so a publish that includes older history (or a tag
+  cut before the fix) re-leaks it.

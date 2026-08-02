@@ -845,6 +845,10 @@ const PACK_TEMPLATES = [{
   cruise: true,
   items: ["Non-slip walking shoes", "Hat + sunscreen (shore bag)", "Water bottles for shore", "Small local cash", "Ship card + photo ID", "Ear protection (if needed)", "Portable phone battery", "Wet wipes"]
 }, {
+  emoji: "🧳",
+  label: "Trip basics",
+  items: ["Passports / photo IDs + booking confirmations", "Phone chargers + power adapters", "Portable phone battery", "Prescriptions in carry-on (see Travel health kit)", "Toiletries bag", "Sunscreen", "Sunglasses", "Day backpack", "Refillable water bottles", "Comfortable walking shoes", "Light jacket or rain layer (check the forecast)", "Swimsuits", "Snacks for the travel day"]
+}, {
   emoji: "💊",
   label: "Travel health kit",
   items: ["Prescriptions in carry-on", "Ibuprofen / paracetamol", "Imodium", "Band-aids + blister pads", "Motion-sickness bands", "Hand sanitizer", "Electrolyte packets", "Allergy meds"]
@@ -1456,17 +1460,13 @@ function dayWhenText(dayId, hhmm) {
   }
   return out;
 }
-const VTZ_ATHENS = ["BEGIN:VTIMEZONE", "TZID:Europe/Athens", "BEGIN:DAYLIGHT", "TZOFFSETFROM:+0200", "TZOFFSETTO:+0300", "TZNAME:EEST", "DTSTART:19700329T030000", "RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU", "END:DAYLIGHT", "BEGIN:STANDARD", "TZOFFSETFROM:+0300", "TZOFFSETTO:+0200", "TZNAME:EET", "DTSTART:19701025T040000", "RRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU", "END:STANDARD", "END:VTIMEZONE"];
 const VTZ_NY = ["BEGIN:VTIMEZONE", "TZID:America/New_York", "BEGIN:DAYLIGHT", "TZOFFSETFROM:-0500", "TZOFFSETTO:-0400", "TZNAME:EDT", "DTSTART:20070311T020000", "RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=2SU", "END:DAYLIGHT", "BEGIN:STANDARD", "TZOFFSETFROM:-0400", "TZOFFSETTO:-0500", "TZNAME:EST", "DTSTART:20071104T020000", "RRULE:FREQ=YEARLY;BYMONTH=11;BYDAY=1SU", "END:STANDARD", "END:VTIMEZONE"];
 const VTZ_CHI = ["BEGIN:VTIMEZONE", "TZID:America/Chicago", "BEGIN:DAYLIGHT", "TZOFFSETFROM:-0600", "TZOFFSETTO:-0500", "TZNAME:CDT", "DTSTART:20070311T020000", "RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=2SU", "END:DAYLIGHT", "BEGIN:STANDARD", "TZOFFSETFROM:-0500", "TZOFFSETTO:-0600", "TZNAME:CST", "DTSTART:20071104T020000", "RRULE:FREQ=YEARLY;BYMONTH=11;BYDAY=1SU", "END:STANDARD", "END:VTIMEZONE"];
 const VTZ_AMS = ["BEGIN:VTIMEZONE", "TZID:Europe/Amsterdam", "BEGIN:DAYLIGHT", "TZOFFSETFROM:+0100", "TZOFFSETTO:+0200", "TZNAME:CEST", "DTSTART:19700329T020000", "RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU", "END:DAYLIGHT", "BEGIN:STANDARD", "TZOFFSETFROM:+0200", "TZOFFSETTO:+0100", "TZNAME:CET", "DTSTART:19701025T030000", "RRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU", "END:STANDARD", "END:VTIMEZONE"];
-const VTZ_IST = ["BEGIN:VTIMEZONE", "TZID:Europe/Istanbul", "BEGIN:STANDARD", "TZOFFSETFROM:+0300", "TZOFFSETTO:+0300", "TZNAME:+03", "DTSTART:19700101T000000", "END:STANDARD", "END:VTIMEZONE"];
 const VTZ = {
-  "Europe/Athens": VTZ_ATHENS,
   "America/New_York": VTZ_NY,
   "America/Chicago": VTZ_CHI,
-  "Europe/Amsterdam": VTZ_AMS,
-  "Europe/Istanbul": VTZ_IST
+  "Europe/Amsterdam": VTZ_AMS
 };
 const DEFAULT_TZ = typeof TRIP.tz === "string" && TRIP.tz ? TRIP.tz : "America/New_York";
 const DAY_TZ = {};
@@ -3942,60 +3942,12 @@ function App() {
     id: "all",
     label: "All",
     emoji: "✨"
-  }, {
-    id: "travel",
-    label: "Travel",
-    emoji: "✈️"
-  }, {
-    id: "culture",
-    label: "Culture",
-    emoji: "🏛️"
-  }, {
-    id: "dining",
-    label: "Fine Dining",
-    emoji: "🍷"
-  }, {
-    id: "food",
-    label: "Food",
-    emoji: "🍽️"
-  }, {
-    id: "water",
-    label: "Water",
-    emoji: "⛵"
-  }, {
-    id: "beach",
-    label: "Beach & Swim",
-    emoji: "🏖️"
-  }, {
-    id: "relax",
-    label: "Relax",
-    emoji: "🧖"
-  }, {
-    id: "shopping",
-    label: "Shopping",
-    emoji: "🛍️"
-  }, {
-    id: "wellness",
-    label: "Spa",
-    emoji: "💆"
-  }, {
-    id: "cooking",
-    label: "Cooking",
-    emoji: "👨‍🍳"
-  }, {
-    id: "ship",
-    label: "Onboard",
-    emoji: "🚢",
-    cruise: true
-  }, {
-    id: "adventure",
-    label: "Adventure",
-    emoji: "🏍️"
-  }, {
-    id: "photo",
-    label: "Photos",
-    emoji: "📸"
-  }].filter(f => !f.cruise || IS_CRUISE);
+  }].concat(Object.entries(CAT || {}).map(([id, c]) => ({
+    id,
+    label: c && c.label || id,
+    emoji: c && c.emoji || "📍",
+    cruise: id === "ship"
+  }))).filter(f => !f.cruise || IS_CRUISE);
   const acts = (currentDay?.activities || []).filter(a => {
     if (onlyMine && !(a.who || []).includes(user)) return false;
     if (filter !== "all" && a.cat !== filter) return false;

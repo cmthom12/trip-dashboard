@@ -53,8 +53,7 @@ db.exec(`
 // Carry any existing single-token logins into the multi-device token table (so current sessions survive the upgrade).
 try { db.exec("INSERT OR IGNORE INTO user_tokens (token, name) SELECT token, name FROM users WHERE token IS NOT NULL AND token <> ''"); } catch (e) {}
 
-// CORS_ORIGIN env pins CORS to one exact origin (e.g. https://vegas.example.net);
-// unset keeps the permissive template default.
+// CORS_ORIGIN env pins CORS to one exact origin; unset keeps the permissive template default.
 const CORS_ORIGIN = process.env.CORS_ORIGIN || '';
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', CORS_ORIGIN || '*');

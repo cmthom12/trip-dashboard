@@ -86,11 +86,24 @@ function extractList(src, varName) {
 const serverPath = dataOnly ? null : findUp('server.js');
 if (serverPath && famNames.length) {
   const src = fs.readFileSync(serverPath, 'utf8');
+  // v0.6.0+ server.js derives the live lists from the trip data (trip_config)
+  // at runtime; the ALLOWED/PLANNERS literals are only offline fallbacks there,
+  // so a mismatch is informational, not an error.
+  const derived = { ALLOWED: /const\s+allowedNames\s*=/.test(src), PLANNERS: /const\s+plannerNames\s*=/.test(src) };
   for (const listName of ['ALLOWED', 'PLANNERS']) {
     const list = extractList(src, listName);
     if (!list) { warn('Could not read ' + listName + ' from ' + serverPath); continue; }
     const missing = famNames.filter(n => !list.includes(n));
     const extra = list.filter(n => !famNames.includes(n));
+    if (derived[listName] && (missing.length || extra.length)) {
+      console.log('ℹ ' + listName + ' in server.js differs from the family (' +
+        [missing.length ? 'missing: ' + missing.join(', ') : '', extra.length ? 'also lists: ' + extra.join(', ') : '']
+          .filter(Boolean).join('; ') +
+        ') — fine on this app version: that literal is only an offline fallback, and ' +
+        (listName === 'ALLOWED' ? 'who can log in' : 'who can edit the Day Plan') +
+        ' comes from the trip data itself');
+      continue;
+    }
     if (missing.length) err(listName + ' in server.js is missing: ' + missing.join(', ') + ' — they CANNOT ' + (listName === 'ALLOWED' ? 'log in' : 'edit the Day Plan'));
     if (extra.length) warn(listName + ' in server.js also lists: ' + extra.join(', ') + ' — not in this trip\'s family (old sample names?)');
     if (!missing.length && !extra.length) ok(listName + ' in server.js matches the family names');
