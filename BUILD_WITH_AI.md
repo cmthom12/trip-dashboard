@@ -8,9 +8,10 @@ result into the app. About 15 minutes start to finish.
 1. Open a **fresh** chat with an AI.
 2. **Copy the big prompt below**, fill in your trip where it says `<<< YOUR TRIP >>>`, and send it.
 3. The AI asks a few follow-up questions, then returns one block of **JSON** (the trip data).
-4. **Paste that JSON into the app** (one spot in one file) and update **three name lists** (two files).
-5. Run it and look. Want changes? Tell the AI "change day 3 to a beach day" and paste the new
-   version in. Repeat until it's right.
+4. **Save that JSON as `my-trip.json`** in the app folder and run the install tool
+   (one double-click on Windows) — it checks the JSON and wires everything up for you.
+5. Run it and look. Want changes? Tell the AI "change day 3 to a beach day", save the new
+   version, and apply it again. Repeat until it's right.
 
 > You never need to understand the JSON. You're just moving it from the AI into one file.
 
@@ -41,7 +42,8 @@ essentials, embassies, enrichments.
 - Give every day a unique id ("day1","day2",...) and put a matching entry in dayCoords for each.
 - Use real-ish latitude/longitude for map pins and activity locations. If unsure, approximate the city.
 - Do NOT invent confirmation numbers, prices you don't know, or bookings. Leave unknowns as "" (empty).
-- 1–8 travelers. Cover EVERY day of the trip with at least a couple of activities.
+- 1–8 travelers. Give EVERY day of the trip 5–8 activity OPTIONS. This app is for VOTING —
+  overshoot rather than undershoot; the family discards options, they don't add them.
 - Pick each activity's "cat" from the categories you define.
 
 === SCHEMA ===
@@ -136,6 +138,43 @@ object, no fences, no commentary,"* and it'll fix it.
 
 ## Step 3 — Put it into the app
 
+**A. Save the AI's answer as a file named `my-trip.json`**, in the app folder (the same
+folder as this file). Any editor works — e.g. paste it into Notepad, then *File → Save As*,
+type `my-trip.json` as the name. (If Windows saved it as `my-trip.json.txt`, rename it.)
+
+**B. Install it** — pick one:
+
+- **Windows:** double-click **`Apply-Trip.bat`** and press Enter at the file-name prompt.
+- **Any terminal (Mac/Linux/Windows):**
+  ```
+  node tools/apply-trip-data.js my-trip.json
+  ```
+  Add your timezone for the calendar/clock if it isn't US-Eastern, e.g.
+  `node tools/apply-trip-data.js my-trip.json --tz Europe/Rome`. (The double-click route
+  keeps the default timezone — run the command above, or see the advanced section, to change it.)
+
+The tool checks the JSON first and refuses politely if something's wrong — paste any ✗ lines
+back to your AI, save the corrected JSON, and run it again (**running it twice is safe**).
+When it goes through, it backs up the two files it touches (`*.backup-<timestamp>`), installs
+the trip data, and updates **all four traveler-name lists** for you.
+
+**C. Run it.**
+```
+npm install      # first time only
+npm start
+```
+(or on Windows: double-click `Setup.bat` once, then `Start-Dashboard.bat`.)
+Open **http://localhost:3000**, log in as one of your travelers, set a PIN, and look around.
+
+Two quirks worth knowing on first run:
+- If you played with the **sample** trip first, stop the server and delete `data.db` before
+  your first real run — otherwise the old sample logins linger in the user list.
+- Before your trip's start date the Itinerary can open on an empty day ("0 activities").
+  Just tap any day in the day strip — the app only auto-selects a day during the trip itself.
+
+<details>
+<summary><b>Advanced: install it by hand instead</b> (what the tool does, as manual edits)</summary>
+
 **A. Paste the trip data.** Open `public/index.html` in any text editor. Find this line
 (it's near the top):
 ```html
@@ -155,9 +194,9 @@ const ALLOWED  = ["John","Jane","Max"];   // who can log in
 ```js
 const PLANNERS = ["John","Jane","Max"];   // who can edit the day plan (often everyone)
 ```
-3. In `public/index.html`, just below the trip-data block (~line 814 — search for
-   `const PLANNERS`): this one controls whether the Day-Plan **edit buttons are shown**;
-   if you skip it, planners can log in but see a read-only day plan:
+3. In `public/index.html`, just below the trip-data block (search for `const PLANNERS`):
+   this one controls whether the Day-Plan **edit buttons are shown**; if you skip it,
+   planners can log in but see a read-only day plan:
 ```js
 const PLANNERS = ["John", "Jane", "Max"];
 ```
@@ -168,23 +207,14 @@ const DEFAULT_TZ = "America/New_York";
 ```
 and change it to yours (e.g. `"America/Chicago"`, `"Europe/Rome"`).
 
-**D. Run it.**
-```
-npm install      # first time only
-npm start
-```
-Open **http://localhost:3000**, log in as one of your travelers, set a PIN, and look around.
-
-Two quirks worth knowing on first run:
-- If you played with the **sample** trip first, stop the server and delete `data.db` before
-  your first real run — otherwise the old sample logins linger in the user list.
-- Before your trip's start date the Itinerary can open on an empty day ("0 activities").
-  Just tap any day in the day strip — the app only auto-selects a day during the trip itself.
+</details>
 
 ---
 
 ## The four places names must match
-This trips people up, so: every traveler name has to be **identical** in all four —
+**If you used `Apply-Trip.bat` / `apply-trip-data.js` above, this is already handled — the
+tool sets all four from your JSON.** For the curious (and the hand-editors):
+every traveler name has to be **identical** in all four —
 1. each `"name"` in **`family`** (in `public/index.html`),
 2. **`ALLOWED`** in `server.js`,
 3. **`PLANNERS`** in `server.js`,
@@ -192,8 +222,9 @@ This trips people up, so: every traveler name has to be **identical** in all fou
 If a name is misspelled in 1–3, that person can't log in; if it's misspelled in 4, they can
 log in but the Day-Plan edit buttons never appear for them. That's the #1 gotcha.
 
-## Optional: check the JSON before (or after) pasting
-There's a small checker script that catches all of the common problems — missing keys,
+## Optional: check the JSON yourself
+The install tool already runs this check for you, before and after installing. But you can
+also run it on its own — it catches all of the common problems: missing keys,
 wrong shapes, a day without a map pin, names that don't match the two files:
 ```
 node tools/validate-trip-data.js my-trip.json      # the AI's raw output

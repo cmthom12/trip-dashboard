@@ -37,6 +37,11 @@ npm start
 ```
 Then open **http://localhost:3000**.
 
+**Windows, no terminal needed:** double-click **`Setup.bat`** once, then
+**`Start-Dashboard.bat`** (starts the server and opens the browser; close its window to
+stop). **`Apply-Trip.bat`** installs your own trip data — see
+[`KICKSTART.md`](KICKSTART.md) for the full beginner walkthrough.
+
 First login: pick any sample traveler (Alex/Sam/Jordan/Riley/Casey) and choose a
 4-digit PIN — that PIN is set on first use. Use a different browser/profile to log in
 as another traveler.
@@ -85,7 +90,12 @@ trip-dashboard-template/
 ├── package.json
 ├── ecosystem.config.js    # PM2 process config (for deploying)
 ├── .nvmrc / .node-version # pins the tested Node version (24)
+├── Setup.bat              # Windows: one-time install (double-click)
+├── Start-Dashboard.bat    # Windows: start the app + open the browser (double-click)
+├── Apply-Trip.bat         # Windows: install your my-trip.json (double-click)
+├── tools/                 # validate-trip-data.js + apply-trip-data.js
 ├── START_HERE.md          # 👈 read this first
+├── KICKSTART.md           # from-zero beginner walkthrough (Windows-first)
 ├── BUILD_WITH_AI.md       # let an AI fill in your trip (no coding)
 ├── README.md
 ├── .gitignore

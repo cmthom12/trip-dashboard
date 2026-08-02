@@ -6,6 +6,7 @@
  * Zero dependencies. Usage:
  *   node tools/validate-trip-data.js my-trip.json
  *   node tools/validate-trip-data.js public/index.html
+ *   node tools/validate-trip-data.js my-trip.json --data-only   # skip the name cross-checks
  *
  * Checks the shapes the app ACTUALLY reads (see BUILD_WITH_AI.md), the
  * day <-> dayCoords pairing, category keys, traveler-name consistency, and —
@@ -18,9 +19,11 @@
 const fs = require('fs');
 const path = require('path');
 
-const file = process.argv[2];
+const args = process.argv.slice(2);
+const dataOnly = args.includes('--data-only'); // JSON shape only; skip the ALLOWED/PLANNERS cross-checks
+const file = args.find(a => a !== '--data-only');
 if (!file) {
-  console.log('Usage: node tools/validate-trip-data.js <trip-data.json | public/index.html>');
+  console.log('Usage: node tools/validate-trip-data.js <trip-data.json | public/index.html> [--data-only]');
   process.exit(1);
 }
 
@@ -71,6 +74,8 @@ if (!isObj(t)) err('"trip" must be an object');
 else {
   for (const k of ['title', 'brand', 'subtitle']) if (!isStr(t[k]) || !t[k]) err('trip.' + k + ' must be a non-empty string (shown in the header)');
   for (const k of ['startDate', 'endDate']) if (!ISO.test(String(t[k] || ''))) err('trip.' + k + ' must be "YYYY-MM-DD" (got ' + JSON.stringify(t[k]) + ')');
+  if (isStr(t.ship) && /^(none|n\/?a|null)$/i.test(t.ship.trim()))
+    warn('trip.ship is "' + t.ship + '" — the app will display a boat named "' + t.ship + '". If there is no ship or cruise, use "" (empty string) instead');
 }
 
 // ── family ───────────────────────────────────────────────────────────────────
@@ -205,7 +210,7 @@ function extractList(src, varName) {
   if (!m) return null;
   try { return JSON.parse(m[1].replace(/'/g, '"')); } catch (e) { return null; }
 }
-const serverPath = findUp('server.js');
+const serverPath = dataOnly ? null : findUp('server.js');
 if (serverPath && famNames.length) {
   const src = fs.readFileSync(serverPath, 'utf8');
   for (const listName of ['ALLOWED', 'PLANNERS']) {
@@ -217,9 +222,10 @@ if (serverPath && famNames.length) {
     if (extra.length) warn(listName + ' in server.js also lists: ' + extra.join(', ') + ' — not in this trip\'s family (old sample names?)');
     if (!missing.length && !extra.length) ok(listName + ' in server.js matches the family names');
   }
-} else if (!serverPath) warn('server.js not found nearby — skipped the ALLOWED/PLANNERS cross-check');
+} else if (!dataOnly && !serverPath) warn('server.js not found nearby — skipped the ALLOWED/PLANNERS cross-check');
 
-const htmlPath = path.resolve(file).endsWith('index.html') ? path.resolve(file) : findUp(path.join('public', 'index.html'));
+const htmlPath = dataOnly ? null :
+  (path.resolve(file).endsWith('index.html') ? path.resolve(file) : findUp(path.join('public', 'index.html')));
 if (htmlPath && famNames.length) {
   const src = fs.readFileSync(htmlPath, 'utf8');
   const list = extractList(src, 'PLANNERS');

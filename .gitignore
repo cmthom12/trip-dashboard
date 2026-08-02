@@ -20,6 +20,9 @@ npm-debug.log*
 # Ad-hoc database backups (e.g. data.db.backup-YYYY-MM-DD)
 *.db.backup*
 
+# Safety copies made by tools/apply-trip-data.js (index.html / server.js)
+*.backup-*
+
 # OS / editor noise
 .DS_Store
 Thumbs.db

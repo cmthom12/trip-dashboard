@@ -35,6 +35,9 @@ the same essentials on a single page.
    Open **http://localhost:3000**. Log in as any traveler and pick a 4-digit PIN.
    *(You'll need Node.js 24 installed first — get it free at nodejs.org.)*
 
+   **On Windows you can skip the terminal entirely:** double-click `Setup.bat` once, then
+   `Start-Dashboard.bat`. The full from-zero walkthrough is **[`KICKSTART.md`](KICKSTART.md)**.
+
 2. **Put it online for the family** when you're happy with it. A complete step-by-step
    deploy kit — including turning on **HTTPS** (the padlock) — is in the **`deploy/`** folder.
    Start with [`deploy/DEPLOY.md`](deploy/DEPLOY.md).
