@@ -1,0 +1,117 @@
+<!doctype html>
+<!-- admin-hub UI — plain vanilla JS on purpose (same visual plainness as each
+     instance's admin.html, which is the precedent; the board is far simpler
+     than the PWA, so no vendored-react needed). The admin key lives in
+     sessionStorage for this tab only and is sent as X-Admin-Key — the exact
+     header the instances' admin gate reads. The hub never stores it. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trip Admin Hub</title>
+<style>
+  body { font: 14px/1.45 system-ui, sans-serif; margin: 0; background: #F3F4F6; color: #111827; }
+  header { background: #0D2B4E; color: #fff; padding: 12px 18px; display: flex; justify-content: space-between; align-items: center; }
+  header h1 { font-size: 16px; margin: 0; }
+  header button { background: none; border: 1px solid #ffffff66; color: #fff; border-radius: 8px; padding: 4px 10px; cursor: pointer; font-size: 12px; }
+  main { max-width: 980px; margin: 18px auto; padding: 0 14px; }
+  .gate { max-width: 420px; margin: 60px auto; background: #fff; border-radius: 12px; padding: 22px; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+  .gate input { width: 100%; box-sizing: border-box; padding: 9px 10px; font-size: 14px; border: 1px solid #D1D5DB; border-radius: 8px; margin: 8px 0; }
+  .gate button { width: 100%; padding: 10px; background: #0D2B4E; color: #fff; border: none; border-radius: 8px; font-weight: 700; cursor: pointer; }
+  .err { color: #B91C1C; font-size: 13px; min-height: 18px; }
+  .card { background: #fff; border-radius: 12px; padding: 14px 16px; margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.07); }
+  .card h2 { font-size: 15px; margin: 0 0 2px; display: flex; align-items: center; gap: 8px; }
+  .pill { font-size: 11px; font-weight: 700; border-radius: 10px; padding: 2px 8px; }
+  .ok  { background: #DCFCE7; color: #166534; }
+  .bad { background: #FEE2E2; color: #991B1B; }
+  .muted { color: #6B7280; font-size: 12px; }
+  .stats { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 8px; font-size: 13px; }
+  .stats b { font-variant-numeric: tabular-nums; }
+  a.open { font-size: 13px; font-weight: 700; color: #0D2B4E; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Trip Admin Hub</h1>
+  <button id="lockBtn" hidden>Lock</button>
+</header>
+<main id="main"></main>
+<script>
+'use strict';
+var KEY_STORE = 'tg_admin_key'; // sessionStorage only — never localStorage, never sent anywhere but the hub API
+var $main = document.getElementById('main');
+var $lock = document.getElementById('lockBtn');
+function key() { return sessionStorage.getItem(KEY_STORE) || ''; }
+function esc(s) { var d = document.createElement('div'); d.textContent = String(s == null ? '' : s); return d.innerHTML; }
+function kb(n) { return n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.round(n / 1024) + ' KB'; }
+
+function showGate(msg) {
+  $lock.hidden = true;
+  $main.innerHTML =
+    '<div class="gate"><h2>Admin key</h2>' +
+    '<p style="font-size:13px">One droplet-wide key. Held for this tab only (sessionStorage), sent as <code>X-Admin-Key</code> and forwarded to each instance — the hub stores nothing.</p>' +
+    '<div class="err">' + esc(msg || '') + '</div>' +
+    '<input id="keyIn" type="password" placeholder="admin key" autofocus>' +
+    '<button id="go">Open the board</button></div>';
+  var go = function () {
+    var v = document.getElementById('keyIn').value.trim();
+    if (v) { sessionStorage.setItem(KEY_STORE, v); board(); }
+  };
+  document.getElementById('go').addEventListener('click', go);
+  document.getElementById('keyIn').addEventListener('keydown', function (e) { if (e.key === 'Enter') go(); });
+}
+
+function card(inst, ov) {
+  var h = inst.health || {};
+  var head = '<h2>' + esc(inst.name) +
+    ' <span class="pill ' + (h.ok ? 'ok' : 'bad') + '">' + (h.ok ? 'healthy v' + esc(h.version) : esc(h.error || ('HTTP ' + h.status))) + '</span></h2>';
+  var open = inst.origin
+    ? '<a class="open" target="_blank" rel="noopener" href="' + esc(inst.origin) + '/admin.html">open full admin ↗</a>'
+    : '<span class="muted">no public origin in .env</span>';
+  var body;
+  if (ov && ov.ok && ov.data) {
+    var d = ov.data, reg = 0;
+    (d.travelers || []).forEach(function (t) { if (t.registered) reg++; });
+    var lastBk = (d.backups && d.backups[0]) ? d.backups[0].mtime.slice(0, 16).replace('T', ' ') : 'none';
+    body = '<div class="muted">' + esc(d.trip.title || '(untitled trip)') + ' · ' + esc(d.trip.startDate) + ' → ' + esc(d.trip.endDate) + ' · trip v' + esc(d.trip.version) + '</div>' +
+      '<div class="stats">' +
+      '<span>travelers registered <b>' + reg + '/' + (d.travelers || []).length + '</b></span>' +
+      '<span>db <b>' + kb(d.db.sizeBytes) + '</b></span>' +
+      '<span>notes <b>' + d.db.rows.notes + '</b></span>' +
+      '<span>day-plan rows <b>' + d.db.rows.day_schedule + '</b></span>' +
+      '<span>backups <b>' + (d.backups || []).length + '</b> (latest ' + esc(lastBk) + ')</span>' +
+      '</div>';
+  } else if (ov) {
+    body = '<div class="err">' + (ov.status === 401 ? 'key rejected by this instance (401) — run the key-sync tool?' : esc(ov.error || 'unreachable')) + '</div>';
+  } else {
+    body = '<div class="muted">loading overview…</div>';
+  }
+  return '<div class="card">' + head + body + '<div style="margin-top:8px">' + open + '</div></div>';
+}
+
+function render(instances, ovByName) {
+  $lock.hidden = false;
+  if (!instances.length) { $main.innerHTML = '<p class="muted">No instances found under TRIPS_ROOT.</p>'; return; }
+  $main.innerHTML = instances.map(function (i) { return card(i, ovByName && ovByName[i.name]); }).join('');
+}
+
+function board() {
+  fetch('/api/instances').then(function (r) { return r.json(); }).then(function (instances) {
+    render(instances, null);
+    return fetch('/api/overview', { headers: { 'X-Admin-Key': key() } })
+      .then(function (r) { return r.json(); })
+      .then(function (ovs) {
+        var all401 = ovs.length && ovs.every(function (o) { return o.status === 401; });
+        if (all401) { sessionStorage.removeItem(KEY_STORE); showGate('That key was rejected by every instance.'); return; }
+        var byName = {};
+        ovs.forEach(function (o) { byName[o.name] = o; });
+        render(instances, byName);
+      });
+  }).catch(function () { $main.innerHTML = '<p class="err">Hub API unreachable.</p>'; });
+}
+
+$lock.addEventListener('click', function () { sessionStorage.removeItem(KEY_STORE); showGate(); });
+if (key()) board(); else showGate();
+</script>
+</body>
+</html>

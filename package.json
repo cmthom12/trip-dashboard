@@ -1,6 +1,6 @@
 {
   "name": "trip-dashboard-template",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "private": true,
   "description": "Self-hosted family trip dashboard — clean template (synthetic sample data, no personal data)",
   "main": "server.js",

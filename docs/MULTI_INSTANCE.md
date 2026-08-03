@@ -64,8 +64,13 @@ domain `trip-c.trips.example.com`).
    *Rollback: same as step 4 — still no live data.*
 
 6. **Environment**: `cp deploy/env.template /var/www/trips/trip-c/.env`, fill
-   `PORT=3003`, a real `ADMIN_KEY`, `CORS_ORIGIN=https://trip-c.trips.example.com`,
-   then `chmod 600 /var/www/trips/trip-c/.env`.
+   `PORT=3003` and `CORS_ORIGIN=https://trip-c.trips.example.com`, then
+   `chmod 600 /var/www/trips/trip-c/.env`. For `ADMIN_KEY`, the droplet runs
+   **one shared key** — copy the `ADMIN_KEY=` line from any existing instance's
+   `.env` (or just run `deploy/sync-admin-key.sh` on the droplet after creating
+   the file; it copies the key everywhere, chmods, reloads, and prints a
+   fingerprint+probe table). Generate a fresh key (`openssl rand -hex 32`)
+   **only** on a brand-new droplet with no instances yet.
    *Rollback: delete the file.*
 
 7. **PM2**: `cp deploy/ecosystem.template.config.js /var/www/trips/trip-c/ecosystem.config.js`,
@@ -111,6 +116,12 @@ below). Do this in a quiet moment — the family sees a minute of downtime.
 5. **New PM2 config**: `cp deploy/ecosystem.template.config.js /var/www/trips/trip-a/ecosystem.config.js`,
    set `NAME = 'trip-a'` (delete any stale root-level ecosystem file left in the
    moved dir so only the new per-instance one remains).
+   **Field note (2026-08, from the real migration):** a moved pre-multi
+   instance carries a **stale `deploy/` directory** — old single-instance
+   scripts, possibly even a nested `deploy/deploy/` from an old copy. Do NOT
+   use its templates. Replace it wholesale: `rm -rf deploy && cp -r
+   /var/www/trips/<any-fresh-instance>/deploy .` (or re-stamp from a fresh
+   `git archive`), so the dir matches the code version you'll deploy next.
 6. **nginx**: if you renumbered the port in step 4, update the site's
    `proxy_pass http://127.0.0.1:<port>;` accordingly; `nginx -t && systemctl reload nginx`.
 7. **Start + gate**: `cd /var/www/trips/trip-a && pm2 start ecosystem.config.js && pm2 save`,
@@ -127,3 +138,48 @@ below). Do this in a quiet moment — the family sees a minute of downtime.
 /var/www/trips/trip-a /var/www/trip-dashboard`; restore the old nginx port if
 changed; `pm2 start` the old config as before; the step-1 copy in `/root` is
 the data safety net throughout.
+
+## ADMIN-HUB — one read-only board for every instance
+
+The hub (`admin-hub/` in the repo) serves an aggregate admin console at one
+admin domain: a card per instance with health, trip summary, db/backup stats,
+and an "open full admin" link to that instance's own `admin.html`. It discovers
+instances by scanning `/var/www/trips/*/.env` (name = dirname, `PORT` +
+`CORS_ORIGIN` from the file) — no config of its own. It stores **no secrets**:
+the admin key is typed into the page, held in tab sessionStorage, sent as
+`X-Admin-Key`, and forwarded verbatim to each instance over localhost; instance
+status codes (incl. 401) pass through unchanged.
+
+> **HAZARD — placement.** The hub's home is `/var/www/admin-hub`. It must
+> **never** live under `/var/www/trips`: it would discover itself as an
+> "instance" and `backup-all.sh` would sweep its directory into the db-backup
+> loop. (The code and templates repeat this warning.)
+
+Install (placeholders as usual; port `3010`):
+
+1. **DNS**: A record `admin.trips.example.com` → `<droplet-ip>` (DNS-only /
+   grey cloud). *Rollback: delete the record.*
+2. **nginx**: copy `deploy/nginx/trip-dashboard.conf.template` to
+   `/etc/nginx/sites-available/admin-hub`, fill `__SERVER_NAME__` =
+   `admin.trips.example.com`, `__APP_PORT__` = `3010`, `__WEBROOT__`/
+   `__CERT_DIR__` per the template header; symlink into `sites-enabled`,
+   `nginx -t && systemctl reload nginx`. *Rollback: remove the symlink, reload.*
+3. **Cert**: `certbot certonly --webroot -w /var/www/letsencrypt -d admin.trips.example.com`,
+   then enable the TLS lines. *Rollback: `certbot delete --cert-name admin.trips.example.com`.*
+4. **Code**: `mkdir -p /var/www/admin-hub`, copy `admin-hub/server.js`,
+   `admin-hub/package.json`, `admin-hub/public/` up (first time by hand or by
+   running `admin-hub/deploy-hub.sh` once the process exists — see step 6),
+   `cd /var/www/admin-hub && npm install --omit=dev`.
+   *Rollback: `rm -rf /var/www/admin-hub` (no data lives here, ever).*
+5. **Env**: `cp admin-hub/env.template /var/www/admin-hub/.env`, keep
+   `PORT=3010`, `chmod 600 .env`. Note there is deliberately **no ADMIN_KEY**
+   line. *Rollback: delete the file.*
+6. **PM2**: `cp admin-hub/ecosystem.template.config.js /var/www/admin-hub/ecosystem.config.js`,
+   `cd /var/www/admin-hub && pm2 start ecosystem.config.js && pm2 save`.
+   *Rollback: `pm2 delete admin-hub && pm2 save`.*
+7. **Verify**: `curl -s http://localhost:3010/api/health` → `{"status":"ok",...}`;
+   `curl -s http://localhost:3010/api/instances` → one entry per trip with
+   health; open `https://admin.trips.example.com`, enter the droplet admin key,
+   confirm every card fills in and each "open full admin" link lands on the
+   right instance. **Code updates from then on: `admin-hub/deploy-hub.sh`**
+   (same restart + version-checking health gate as instance deploys).
