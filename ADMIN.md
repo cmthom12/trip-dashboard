@@ -62,6 +62,17 @@ What you can do:
 Both destructive buttons require typing the traveler's name to confirm; Import
 shows a confirmation spelling out exactly what changes.
 
+**Windows: copying the trip JSON to the clipboard.** Use PowerShell's
+`Set-Clipboard`, which preserves UTF-8:
+
+```
+powershell.exe -NoProfile -Command "Set-Clipboard -Value (Get-Content -Raw -Encoding UTF8 'my-trip.json')"
+```
+
+**Never use `clip.exe`.** It mangles UTF-8, so em dashes and emoji arrive as
+mojibake (`â€”`, `ðŸ›`) — and once that JSON is imported, the garbled text is
+live for the whole family.
+
 ## Notes
 
 - The admin API lives under `/api/admin/*` and never touches the family-facing
@@ -73,3 +84,63 @@ shows a confirmation spelling out exactly what changes.
   the only real protection is the key — treat it like a password.
 - `scripts/SERVER_OPS.md` (if present) covers nightly automated backups; the
   button here is for "right before I change something" snapshots.
+
+## After the trip — the review (retro)
+
+The dashboard grows a **✅ Review** tab automatically the day after the trip's
+`endDate` (in the trip's timezone) — nothing to enable, same logins. Each
+traveler walks their own scheduled days and, for every item, first answers
+**"Did you do this?"**. Only a **Yes** unlocks a rating (loved / good / meh /
+disliked); a **No** simply closes the item and is never counted against the
+idea — skipping a rainy boat trip says nothing about boats. Low ratings and
+downgrades ask for a one-tap reason (weather, service, off day, …) so a bad
+*experience* doesn't get misread as a bad *idea*. Travelers can also add
+things they did that were never on the plan — those are the strongest signal
+of all. Answers save one by one; anyone can stop halfway and pick it up later.
+
+**Checking completion** (with the admin key set, same header as the other
+admin routes):
+
+```bash
+curl -s https://your-site/api/review/status -H "X-Admin-Key: your-key"
+```
+
+One row per traveler: how many scheduled items they had, how many they've
+answered, self-added count, and when they last touched the review. Reviews
+land in two dedicated tables (`reviews`, `review_additions`) and never modify
+the pre-trip votes — both records are kept, and the gap between them is
+exactly what the profile export reads.
+
+## After the trip — traveler profiles
+
+Run `tools/profile-export.js` **after the family has finished the review** —
+the export gains per-traveler ACTUAL sections (what they really loved,
+what genuinely wasn't their thing vs. what was just bad weather, what's worth
+retrying, what they self-added) and labels every family-level retro section
+with the responder count. It still works fine with no review data at all;
+you just get the pre-trip picture only.
+
+When a trip is over and you're about to retire the instance, its votes are the
+only lasting record of what each traveler actually liked.
+`tools/profile-export.js` turns them into one paste-ready block per traveler:
+their star-weighted category totals, must-do and strong picks, suggestions they
+wrote, and the family-level picture (unanimous choices, top consensus
+activities, interests they declared but never voted for). Paste a block into the
+prompt from `BUILD_WITH_AI.md` and the next trip starts from evidence instead of
+guesswork.
+
+```bash
+node tools/profile-export.js --db data.db --trip my-trip.json [--out <file>]
+```
+
+`--trip` also accepts a `public/index.html` and pulls the trip-data block out of
+it. Without `--out` the profiles go to stdout.
+
+Two rules:
+
+- **Work from a copy of the database.** The tool opens it read-only, but the
+  habit is what protects you — copy `data.db` somewhere scratch and point `--db`
+  at the copy.
+- **Never commit the output.** These blocks are full of real names and
+  preferences; this repo is a public template. Write them outside the repo
+  (the tool warns if `--out` lands inside the working tree).

@@ -43,18 +43,28 @@ Riley, Casey).
 ## Step 4 — Make it your trip (with an AI)
 
 Open **[`BUILD_WITH_AI.md`](BUILD_WITH_AI.md)** and follow it — you describe your trip to
-ChatGPT/Claude/Gemini and it writes the data file. One tip before you start the chat:
+ChatGPT/Claude/Gemini and it writes the data file. Two things to know before you start:
 
-- **Ask for plenty of activity options (5–8 per day).** This app is for voting — overshoot
-  rather than undershoot; the family discards options, they don't add them.
+- **The prompt asks for a lot on purpose.** It tells the AI to produce **at least 10
+  activities on every day**, **at least 3 for every traveler on every day**, and a trip-wide
+  **"Must see & do"** list of the big landmarks for each place you stop in. This app is for
+  voting — the family's job is to discard options, not to go find more. Paste the prompt
+  whole and don't talk the AI down to a shorter answer.
+- **You have a checker, and it's your accept/reject test.** `Apply-Trip.bat` runs it, and it
+  says in plain English both what's *broken* (✗) and where the trip came in *thin*
+  (⚠ "Day 3 has 7 activities — the guide asks for at least 10"). Paste those lines straight
+  back into the AI chat and ask it to fix exactly those. Two or three rounds is normal.
 
 When the AI gives you the JSON: save it as **`my-trip.json`** in the app folder, double-click
 **`Apply-Trip.bat`**, and press Enter. It checks everything, installs your trip, and tells
 you what to do if something's off. Then close the dashboard window and double-click
 `Start-Dashboard.bat` again — it's your trip now.
 
-*(Played with the sample first? Delete the `data.db` file once, while the dashboard is
-stopped, so the sample logins disappear.)*
+*(Played with the sample first? That's fine — `Apply-Trip.bat` installs your trip straight
+into the existing database, keeping any PINs, votes and lists. If it prints a "ONE MORE
+STEP" note instead, the database was locked — usually the dashboard is still running.
+Close the dashboard window, run `Apply-Trip.bat` again, and it goes through. Deleting
+`data.db` is only for when you want to wipe everything and start fresh.)*
 
 ## Restarting later
 

@@ -13,9 +13,15 @@
  *   5. optionally sets the timezone (patches the DEFAULT_TZ literal on older
  *      trees; on v0.6+ trees, where the literal is gone and the client reads
  *      the trip's "tz" key, --tz is written into the trip JSON itself),
- *   6. re-validates the patched files and prints what to do next.
+ *   6. re-validates the patched files and prints what to do next,
+ *   7. and, when a data.db already exists (the dashboard has run before),
+ *      installs the trip straight into it — the same versioned trip_config
+ *      import the admin page uses (tools/lib/trip-store.js), keeping PINs,
+ *      votes and lists. If the database can't be written (e.g. locked), it
+ *      falls back to explaining the two manual options.
  *
- * Zero dependencies. Safe to run twice. Usage:
+ * No dependencies beyond the app's own (better-sqlite3, only when a data.db
+ * exists). Safe to run twice. Usage:
  *   node tools/apply-trip-data.js my-trip.json
  *   node tools/apply-trip-data.js my-trip.json --tz America/Chicago
  */
@@ -153,10 +159,47 @@ if (post.status !== 0) {
   console.log('  restore them by copying the *.backup-' + stamp + ' files back over the originals.');
   process.exit(1);
 }
-console.log('✅ Your trip is installed — restart the app to see it:');
-console.log('   • Windows: close the dashboard window if it\'s open, then double-click Start-Dashboard.bat');
-console.log('   • Terminal: press Ctrl+C in the running server, then: npm start');
-console.log('   Then open http://localhost:3000 and log in as one of your travelers.');
+console.log('✅ Your trip is installed into the app files.');
 console.log('');
-console.log('   Played with the sample trip earlier? Stop the server and delete data.db once,');
-console.log('   so the old sample logins don\'t linger. (Everyone re-picks a PIN on next login.)');
+const DB_PATH = path.join(ROOT, 'data.db');
+if (fs.existsSync(DB_PATH)) {
+  // Since the trip_config upgrade the app reads its trip from the database,
+  // which was seeded the first time the server ran — the files patched above
+  // only feed a FRESH database. So install the trip into data.db too, through
+  // the same versioned import path the admin page uses (tools/lib/trip-store.js).
+  let r = null, dbFail = '';
+  try {
+    const Database = require(path.join(ROOT, 'node_modules', 'better-sqlite3'));
+    const { importTripConfig } = require(path.join(__dirname, 'lib', 'trip-store.js'));
+    const db = new Database(DB_PATH, { timeout: 3000 });
+    try { r = importTripConfig(db, trip, 'apply-tool'); }
+    finally { try { db.close(); } catch (e) {} }
+    if (!r.ok) dbFail = 'the trip failed the import validation: ' + r.errors.join('; ');
+  } catch (e) {
+    r = null;
+    dbFail = e.message; // e.g. SQLITE_BUSY: the running server holds the database
+  }
+  if (r && r.ok) {
+    console.log('✓ Trip installed into the database too (data.db, trip version ' + r.version + ').');
+    console.log('  Existing PINs, votes and lists are kept.');
+    console.log('  If the dashboard is running RIGHT NOW, restart it to show the new trip:');
+    console.log('  close its window (or Ctrl+C), then Start-Dashboard.bat / npm start.');
+  } else {
+    // Direct install didn't work — fall back to the loud manual instructions.
+    console.log('⚠ ONE MORE STEP — the dashboard has been started before (a data.db file');
+    console.log('  exists), and the app reads its trip from that database, not from the');
+    console.log('  files this tool just patched. Installing your trip into the database');
+    console.log('  directly didn\'t work here (' + dbFail + ').');
+    console.log('  Your new trip will NOT appear until you do ONE of these:');
+    console.log('    a) Fresh start: stop the dashboard (close its window / Ctrl+C) and');
+    console.log('       delete the data.db file, then start it again. Sample-trip PINs,');
+    console.log('       votes and lists are wiped; everyone picks a PIN at next login.');
+    console.log('    b) Keep existing data: paste the same JSON into the admin page\'s');
+    console.log('       Trip Setup box and hit Import instead — see ADMIN.md.');
+  }
+} else {
+  console.log('   Start the dashboard and your trip seeds its database on first run:');
+  console.log('   • Windows: double-click Start-Dashboard.bat');
+  console.log('   • Terminal: npm start');
+  console.log('   Then open http://localhost:3000 and log in as one of your travelers.');
+}

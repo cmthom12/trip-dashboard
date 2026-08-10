@@ -69,20 +69,30 @@ function card(inst, ov) {
     ? '<a class="open" target="_blank" rel="noopener" href="' + esc(inst.origin) + '/admin.html">open full admin ↗</a>'
     : '<span class="muted">no public origin in .env</span>';
   var body;
+  // Backups = droplet cron copies counted by the hub (ov.backups, from
+  // BACKUPS_ROOT) + the instance's own in-app "Backup Now" files (d.backups).
+  // Different directories, so summing never double-counts.
+  var hubBk = (ov && ov.backups) || { count: 0, latestMtime: null };
   if (ov && ov.ok && ov.data) {
     var d = ov.data, reg = 0;
     (d.travelers || []).forEach(function (t) { if (t.registered) reg++; });
-    var lastBk = (d.backups && d.backups[0]) ? d.backups[0].mtime.slice(0, 16).replace('T', ' ') : 'none';
+    var bkCount = hubBk.count + (d.backups || []).length;
+    var bkLatest = hubBk.latestMtime || '';
+    if (d.backups && d.backups[0] && d.backups[0].mtime > bkLatest) bkLatest = d.backups[0].mtime;
+    var lastBk = bkLatest ? bkLatest.slice(0, 16).replace('T', ' ') : 'none';
     body = '<div class="muted">' + esc(d.trip.title || '(untitled trip)') + ' · ' + esc(d.trip.startDate) + ' → ' + esc(d.trip.endDate) + ' · trip v' + esc(d.trip.version) + '</div>' +
       '<div class="stats">' +
       '<span>travelers registered <b>' + reg + '/' + (d.travelers || []).length + '</b></span>' +
       '<span>db <b>' + kb(d.db.sizeBytes) + '</b></span>' +
       '<span>notes <b>' + d.db.rows.notes + '</b></span>' +
       '<span>day-plan rows <b>' + d.db.rows.day_schedule + '</b></span>' +
-      '<span>backups <b>' + (d.backups || []).length + '</b> (latest ' + esc(lastBk) + ')</span>' +
+      '<span>backups <b>' + bkCount + '</b> (latest ' + esc(lastBk) + ')</span>' +
       '</div>';
   } else if (ov) {
-    body = '<div class="err">' + (ov.status === 401 ? 'key rejected by this instance (401) — run the key-sync tool?' : esc(ov.error || 'unreachable')) + '</div>';
+    body = '<div class="err">' + (ov.status === 401 ? 'key rejected by this instance (401) — run the key-sync tool?' : esc(ov.error || 'unreachable')) + '</div>' +
+      // A down instance is exactly when the droplet backups matter — still show them.
+      (hubBk.count ? '<div class="muted">backups on droplet: ' + hubBk.count + ' (latest ' +
+        esc(hubBk.latestMtime.slice(0, 16).replace('T', ' ')) + ')</div>' : '');
   } else {
     body = '<div class="muted">loading overview…</div>';
   }

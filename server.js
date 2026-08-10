@@ -100,11 +100,10 @@ const adminGate = (req, res, next) => {
 };
 app.use('/api/admin', adminGate);
 
-// ── TRIP CONFIG: the active trip lives in the db; POST /api/trip (admin) imports a new one. ──
-db.exec(`CREATE TABLE IF NOT EXISTS trip_config (
-  id INTEGER PRIMARY KEY AUTOINCREMENT, json TEXT, version INTEGER,
-  updated_by TEXT, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-)`);
+// ── TRIP CONFIG: the active trip lives in the db; POST /api/trip (admin) imports a new one.
+// Import + versioning are shared with tools/apply-trip-data.js via tools/lib/trip-store.js. ──
+const { ensureTripConfigTable, importTripConfig } = require('./tools/lib/trip-store.js');
+ensureTripConfigTable(db);
 // Boot migration: first start after this upgrade seeds version 1 from the inline
 // trip-data block, so existing deployments keep their trip with zero manual steps.
 try {
@@ -170,14 +169,10 @@ app.post('/api/trip/validate', adminGate, (req, res) => {
 app.post('/api/trip', adminGate, (req, res) => {
   const d = req.body;
   if (!d || typeof d !== 'object' || Array.isArray(d)) return res.status(400).json({ ok: false, errors: ['Body must be the trip-data JSON object'], warnings: [] });
-  const v = validateTripData(d);
-  const f = _tripFindings(v);
-  if (v.errors) return res.status(400).json({ ok: false, ...f });
-  const version = activeTripVersion() + 1;
-  db.prepare('INSERT INTO trip_config (json, version, updated_by) VALUES (?, ?, ?)')
-    .run(JSON.stringify(d), version, 'admin');
+  const r = importTripConfig(db, d, 'admin');
+  if (!r.ok) return res.status(400).json({ ok: false, errors: r.errors, warnings: r.warnings });
   _tripCache = d; // refresh the cache: name lists and GET /api/trip switch immediately
-  res.json({ ok: true, version, warnings: f.warnings });
+  res.json({ ok: true, version: r.version, warnings: r.warnings });
 });
 
 app.get('/api/admin/overview', (req, res) => {
@@ -205,6 +200,9 @@ app.get('/api/admin/overview', (req, res) => {
       SELECT MAX(created_at) AS t FROM user_tokens WHERE name = @n
       UNION ALL SELECT MAX(created_at) FROM notes WHERE author = @n
       UNION ALL SELECT MAX(created_at) FROM suggestions WHERE author = @n
+      -- day_schedule deliberately NOT filtered by moved_to here: a tombstone still
+      -- proves its creator was active at created_at; this is an activity signal,
+      -- not plan content.
       UNION ALL SELECT MAX(created_at) FROM day_schedule WHERE created_by = @n
       UNION ALL SELECT MAX(created_at) FROM reservations WHERE created_by = @n
       UNION ALL SELECT MAX(created_at) FROM packing WHERE who = @n
@@ -219,7 +217,12 @@ app.get('/api/admin/overview', (req, res) => {
   const rows = {};
   ['users', 'user_tokens', 'interests', 'flight_status', 'notes', 'suggestions',
    'reservations', 'packing', 'day_schedule', 'processed_ops', 'trip_config'].forEach(t => {
-    rows[t] = db.prepare('SELECT COUNT(*) AS c FROM ' + t).get().c;
+    // day_schedule: the hub shows this as "day-plan rows" — count only the visible
+    // plan, not tombstones a move left behind (moved_to set). COALESCE-free because
+    // pre-move databases simply have no moved_to values; the ALTER runs before listen.
+    rows[t] = t === 'day_schedule'
+      ? db.prepare('SELECT COUNT(*) AS c FROM day_schedule WHERE moved_to IS NULL').get().c
+      : db.prepare('SELECT COUNT(*) AS c FROM ' + t).get().c;
   });
   let dbSizeBytes = 0;
   try { dbSizeBytes = fs.statSync(path.join(__dirname, 'data.db')).size; } catch (e) {}
@@ -403,7 +406,7 @@ app.post('/api/reservations', (req, res) => {
   res.json({ ok: true, id: newId });
 });
 app.delete('/api/reservations/:id', (req, res) => {
-  const paired = db.prepare('SELECT COUNT(*) AS c FROM day_schedule WHERE res_id = ? OR activity_id = ?')
+  const paired = db.prepare('SELECT COUNT(*) AS c FROM day_schedule WHERE (res_id = ? OR activity_id = ?) AND moved_to IS NULL')
     .get(req.params.id, 'res:' + req.params.id).c > 0;
   if (paired && !plannerNames().includes(req.authUser)) {
     return res.status(403).json({ error: 'This booking is on the day plan — only trip planners can delete it' });
@@ -438,8 +441,15 @@ app.delete('/api/packing/:id', (req, res) => {
 
 // ── DAY SCHEDULE (planned itinerary; only the planners can edit) ─────────────
 try { db.exec("ALTER TABLE day_schedule ADD COLUMN res_id INTEGER"); } catch (e) {}
+// moved_to: set when a move replaced this row — it points at the replacement row's id.
+// A row with moved_to set is a tombstone: it stays for history but is invisible to every
+// plan read (all of which filter moved_to IS NULL). Moves never UPDATE day/time/who in
+// place and never DELETE — see POST /api/dayplan/move.
+try { db.exec("ALTER TABLE day_schedule ADD COLUMN moved_to INTEGER"); } catch (e) {}
 try { db.exec("ALTER TABLE reservations ADD COLUMN created_by TEXT"); } catch (e) {}
 // One-time backfill: attribute existing bookings from the day-plan row that created them.
+// (No moved_to filter: this targets legacy databases that predate moves entirely, and a
+// tombstone's created_by is still the correct attribution.)
 try { db.exec(`UPDATE reservations SET created_by = (
   SELECT ds.created_by FROM day_schedule ds
   WHERE ds.res_id = reservations.id AND ds.created_by IS NOT NULL
@@ -448,7 +458,7 @@ try { db.exec(`UPDATE reservations SET created_by = (
 // (template: no trip-specific seed data)
 const PLANNERS = ["Alex", "Sam", "Jordan", "Riley", "Casey"]; // fallback only — see plannerNames()
 app.get('/api/schedule', (req, res) => {
-  res.json(db.prepare('SELECT * FROM day_schedule ORDER BY day_id ASC, time_text ASC, id ASC').all()); 
+  res.json(db.prepare('SELECT * FROM day_schedule WHERE moved_to IS NULL ORDER BY day_id ASC, time_text ASC, id ASC').all());
 });
 app.post('/api/schedule', (req, res) => {
   const { dayId, activityId, title, time, who, whenText, resId } = req.body;
@@ -476,7 +486,8 @@ app.post('/api/schedule', (req, res) => {
 app.patch('/api/schedule/:id', (req, res) => {
   const { who, time, whenText } = req.body;
   if (!plannerNames().includes(req.authUser)) return res.status(403).json({ error: 'Only trip planners can edit the day plan' });
-  const row = db.prepare('SELECT * FROM day_schedule WHERE id = ?').get(req.params.id);
+  // moved tombstones are not editable — the replacement row is the live one
+  const row = db.prepare('SELECT * FROM day_schedule WHERE id = ? AND moved_to IS NULL').get(req.params.id);
   if (!row) return res.status(404).json({ error: 'Not found' });
   if (who !== undefined) {
     if (!Array.isArray(who)) return res.status(400).json({ error: 'Invalid' });
@@ -491,7 +502,9 @@ app.patch('/api/schedule/:id', (req, res) => {
 });
 app.delete('/api/schedule/:id', (req, res) => {
   if (!plannerNames().includes(req.authUser)) return res.status(403).json({ error: 'Only trip planners can edit the day plan' });
-  const row = db.prepare('SELECT * FROM day_schedule WHERE id = ?').get(req.params.id);
+  // A moved tombstone must be a no-op here: deleting it would cascade to its linked
+  // reservation, which the (visible) replacement row still references.
+  const row = db.prepare('SELECT * FROM day_schedule WHERE id = ? AND moved_to IS NULL').get(req.params.id);
   if (!row) return res.json({ ok: true });
   let resId = row.res_id;
   if (!resId && row.activity_id && String(row.activity_id).indexOf('res:') === 0) resId = parseInt(String(row.activity_id).slice(4), 10) || null;
@@ -503,6 +516,30 @@ app.delete('/api/schedule/:id', (req, res) => {
     db.prepare('DELETE FROM day_schedule WHERE id = ?').run(row.id);
   })();
   res.json({ ok: true });
+});
+
+// Move a plan item to another day. NOT a mutating UPDATE: the original row is kept as a
+// tombstone (moved_to = replacement id) and a fresh row is inserted on the target day —
+// so the plan's history survives and offline replays stay safe (X-Op-Id dedupe applies).
+app.post('/api/dayplan/move', (req, res) => {
+  const { schedule_id, target_day, time_text } = req.body || {};
+  if (!plannerNames().includes(req.authUser)) return res.status(403).json({ error: 'Only trip planners can edit the day plan' });
+  const id = parseInt(schedule_id, 10);
+  if (!id || id < 1) return res.status(400).json({ error: 'Invalid schedule_id' });
+  const t = activeTrip();
+  const dayOk = t && Array.isArray(t.days) && t.days.some(d => d && String(d.id) === String(target_day));
+  if (!dayOk) return res.status(400).json({ error: 'Unknown day' });
+  const row = db.prepare('SELECT * FROM day_schedule WHERE id = ?').get(id);
+  if (!row) return res.status(404).json({ error: 'Not found' });
+  if (row.moved_to) return res.status(409).json({ error: 'This item was already moved' });
+  const newTime = time_text === undefined || time_text === null ? (row.time_text || '') : String(time_text).slice(0, 10);
+  const newId = db.transaction(() => {
+    const nr = db.prepare('INSERT INTO day_schedule (day_id, activity_id, title, time_text, who, created_by, res_id) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(String(target_day).slice(0, 20), row.activity_id, row.title, newTime, row.who, req.authUser, row.res_id);
+    db.prepare('UPDATE day_schedule SET moved_to = ? WHERE id = ?').run(nr.lastInsertRowid, row.id);
+    return nr.lastInsertRowid;
+  })();
+  res.json({ ok: true, id: newId, dayId: String(target_day) });
 });
 
 // ── LIVE LOCATION (opt-in): last known position per traveler. NO history table, ever. ──
@@ -539,6 +576,160 @@ app.get('/api/locations', (req, res) => {
     .map(r => ({ name: r.name, lat: r.lat, lng: r.lng, acc: r.acc, agoS: Math.round((Date.now() - Date.parse(r.updated_at)) / 1000) }))
     .filter(r => isFinite(r.agoS) && r.agoS * 1000 <= LOC_TTL_MS);
   res.json(out);
+});
+
+// ── POST-TRIP REVIEWS (retro): attendance-gated ratings + free-added items. ──
+// Retro ratings NEVER overwrite pre-trip votes (interests) — both are stored,
+// and the predicted-vs-actual delta is itself a finding (tools/profile-export.js).
+db.exec(`
+  CREATE TABLE IF NOT EXISTS reviews (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, activity_id TEXT,
+    attended INTEGER, rating INTEGER, reason_code TEXT, reason_note TEXT,
+    comment TEXT, created_at TEXT, updated_at TEXT,
+    UNIQUE(name, activity_id)
+  );
+  CREATE TABLE IF NOT EXISTS review_additions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, title TEXT,
+    category TEXT, day TEXT, rating INTEGER, reason_code TEXT,
+    reason_note TEXT, comment TEXT, created_at TEXT, updated_at TEXT
+  );
+`);
+// created_at is CREATION time and never moves on re-answer; updated_at bumps on
+// every write and is what lastReviewAt reads. Databases from the first retro
+// release lack the column — add it and backfill from created_at (same
+// idempotent try/catch pattern as the day_schedule/reservations migrations).
+try { db.exec("ALTER TABLE reviews ADD COLUMN updated_at TEXT"); } catch (e) {}
+try { db.exec("ALTER TABLE review_additions ADD COLUMN updated_at TEXT"); } catch (e) {}
+try { db.exec(`UPDATE reviews SET updated_at = created_at WHERE updated_at IS NULL;
+  UPDATE review_additions SET updated_at = created_at WHERE updated_at IS NULL`); } catch (e) {}
+
+const REVIEW_RATINGS = [3, 2, 1, -1]; // loved / good / meh / disliked
+const REASON_CODES = ['service', 'crowds', 'weather', 'timing', 'logistics', 'mood', 'cost', 'activity', 'other'];
+
+// A scheduled row is identified for review by its trip-data activity id when it
+// has one, else by a synthetic 'sched:<row id>' key (booking/custom plan rows).
+const reviewKey = row => (row.activity_id && String(row.activity_id)) || ('sched:' + row.id);
+
+// Mirrors intParse in public/index.html exactly (bare entries default to 2 stars):
+// the downgrade trigger compares against the vote the app itself displays.
+function preTripStars(activityId, name) {
+  try {
+    const r = db.prepare('SELECT names FROM interests WHERE activity_id = ?').get(activityId);
+    if (!r) return null;
+    for (const e of JSON.parse(r.names || '[]')) {
+      const s = String(e), i = s.lastIndexOf('|');
+      if (i < 0) { if (s === name) return 2; continue; }
+      const st = parseInt(s.slice(i + 1), 10);
+      const ok = st >= 1 && st <= 3;
+      const nm = ok ? s.slice(0, i) : (s.slice(0, i) || s);
+      if (nm === name) return ok ? st : 2;
+    }
+  } catch (e) {}
+  return null;
+}
+
+// Reason required for negatives/meh, or when the retro rating is below that
+// traveler's own pre-trip vote (a downgrade). preStars null = no pre-trip vote.
+const reasonRequired = (rating, preStars) =>
+  rating === -1 || rating === 1 || (preStars !== null && rating < preStars);
+
+// Shared validation for the reason fields. Returns { code, note } or an error string.
+// A reason is always ACCEPTED when valid (a rating-2 with a note is fine) but only
+// REQUIRED when the trigger fires. Only 'other' gates on the note.
+function cleanReason(required, reasonCode, reasonNote) {
+  if (reasonCode === undefined || reasonCode === null || reasonCode === '') {
+    return required ? 'This rating needs a reason — pick the closest one' : { code: null, note: null };
+  }
+  if (!REASON_CODES.includes(reasonCode)) return 'Invalid reason';
+  const note = String(reasonNote || '').slice(0, 300).trim() || null;
+  if (reasonCode === 'other' && !note) return 'A short note is required when the reason is "other"';
+  return { code: reasonCode, note };
+}
+
+// Scheduled items for one traveler (rows whose who-list includes them) + their
+// saved answers. Public GET, same as /api/interests — writes are what need a token.
+app.get('/api/review/items', (req, res) => {
+  const name = String(req.query.name || '');
+  if (!allowedNames().includes(name)) return res.status(400).json({ error: 'Unknown name' });
+  const items = db.prepare('SELECT * FROM day_schedule WHERE moved_to IS NULL ORDER BY day_id ASC, time_text ASC, id ASC').all()
+    .filter(r => { try { return JSON.parse(r.who || '[]').includes(name); } catch (e) { return false; } })
+    .map(r => ({ activityId: reviewKey(r), dayId: r.day_id, title: r.title, timeText: r.time_text, resId: r.res_id || null }));
+  const reviews = {};
+  db.prepare('SELECT * FROM reviews WHERE name = ?').all(name).forEach(r => { reviews[r.activity_id] = r; });
+  const additions = db.prepare('SELECT * FROM review_additions WHERE name = ? ORDER BY id ASC').all(name);
+  res.json({ items, reviews, additions });
+});
+
+// Upsert one review row. The reviewer is req.authUser (trusted from the token,
+// never from the body). ATTENDANCE GATE: "No" ends the item — no rating, no
+// reason, no comment stored, and it is never read as a negative signal.
+app.post('/api/review/item', (req, res) => {
+  const name = req.authUser;
+  const { activityId, attended, rating, reasonCode, reasonNote, comment } = req.body || {};
+  if (!activityId || typeof activityId !== 'string') return res.status(400).json({ error: 'Invalid' });
+  const known = db.prepare('SELECT id, activity_id FROM day_schedule WHERE moved_to IS NULL').all().some(r => reviewKey(r) === activityId);
+  if (!known) return res.status(400).json({ error: 'Not a scheduled item' });
+  if (attended !== 0 && attended !== 1) return res.status(400).json({ error: 'attended must be 0 or 1' });
+  let cRating = null, cReason = null, cNote = null, cComment = null;
+  if (attended === 0) {
+    if (rating !== undefined && rating !== null) return res.status(400).json({ error: 'A rating needs attendance — items answered "No" are never rated' });
+  } else if (rating !== undefined && rating !== null) {
+    if (!REVIEW_RATINGS.includes(rating)) return res.status(400).json({ error: 'Invalid rating' });
+    cRating = rating;
+    const r = cleanReason(reasonRequired(cRating, preTripStars(activityId, name)), reasonCode, reasonNote);
+    if (typeof r === 'string') return res.status(400).json({ error: r });
+    cReason = r.code; cNote = r.note;
+    cComment = String(comment || '').slice(0, 500).trim() || null;
+  }
+  const now = new Date().toISOString();
+  db.prepare(`INSERT INTO reviews (name, activity_id, attended, rating, reason_code, reason_note, comment, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(name, activity_id) DO UPDATE SET attended=excluded.attended, rating=excluded.rating,
+      reason_code=excluded.reason_code, reason_note=excluded.reason_note, comment=excluded.comment,
+      updated_at=excluded.updated_at`)
+    .run(name, activityId, attended, cRating, cReason, cNote, cComment, now, now);
+  res.json({ ok: true });
+});
+
+// Free-add: something they did that was never on the plan. Attended by definition,
+// so a rating is required up front; the reason trigger has no pre-trip vote to
+// compare against (rating -1 or 1 still requires one).
+app.post('/api/review/addition', (req, res) => {
+  const name = req.authUser;
+  const { title, category, day, rating, reasonCode, reasonNote, comment } = req.body || {};
+  if (!title || !String(title).trim()) return res.status(400).json({ error: 'Title required' });
+  if (!REVIEW_RATINGS.includes(rating)) return res.status(400).json({ error: 'Invalid rating' });
+  const r = cleanReason(reasonRequired(rating, null), reasonCode, reasonNote);
+  if (typeof r === 'string') return res.status(400).json({ error: r });
+  const now = new Date().toISOString();
+  const ins = db.prepare(`INSERT INTO review_additions (name, title, category, day, rating, reason_code, reason_note, comment, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(name, String(title).slice(0, 160).trim(), String(category || '').slice(0, 60).trim() || null,
+         String(day || '').slice(0, 20).trim() || null, rating, r.code, r.note,
+         String(comment || '').slice(0, 500).trim() || null, now, now);
+  res.json({ ok: true, id: ins.lastInsertRowid });
+});
+
+// Per-traveler completion, admin only (same key gate as the other admin routes).
+// "Done" = attended-No, or attended-Yes with a rating saved.
+app.get('/api/review/status', adminGate, (req, res) => {
+  const sched = db.prepare('SELECT * FROM day_schedule WHERE moved_to IS NULL').all();
+  const travelers = allowedNames().map(name => {
+    const keys = sched
+      .filter(r => { try { return JSON.parse(r.who || '[]').includes(name); } catch (e) { return false; } })
+      .map(reviewKey);
+    const rows = db.prepare('SELECT * FROM reviews WHERE name = ?').all(name);
+    const done = rows.filter(r => keys.includes(r.activity_id) && (r.attended === 0 || r.rating !== null)).length;
+    const additions = db.prepare('SELECT COUNT(*) AS c FROM review_additions WHERE name = ?').get(name).c;
+    // COALESCE covers rows written between the column landing and this read
+    // (none in practice, but a null must never beat a real timestamp to MAX).
+    const last = db.prepare(`SELECT MAX(t) AS t FROM (
+      SELECT MAX(COALESCE(updated_at, created_at)) AS t FROM reviews WHERE name = @n
+      UNION ALL SELECT MAX(COALESCE(updated_at, created_at)) FROM review_additions WHERE name = @n
+    )`).get({ n: name }).t || null;
+    return { name, items: keys.length, done, additions, lastReviewAt: last };
+  });
+  res.json({ travelers });
 });
 
 // Housekeeping: keep the idempotency log from growing forever (drop ops older than 14 days).

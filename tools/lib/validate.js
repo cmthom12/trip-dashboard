@@ -215,6 +215,99 @@ function validateTripData(d) {
       warn('"packing" is present but not a non-empty array of {label, items[], emoji?} templates — the app falls back to the built-in quick-start templates');
   }
 
+  // ── mustDos (optional trip-level "Must see & do" block) ────────────────────
+  // Shape: [{location, emoji?, items:[{id, name, cat, desc?, ll?, link?, note?}]}]
+  // One group per stopping location. Silent when the key is absent, so trips
+  // written before this feature print exactly as they always did.
+  if ('mustDos' in d) {
+    if (!Array.isArray(d.mustDos) || !d.mustDos.length) {
+      err('"mustDos" is present but not a non-empty array — it must look like [{"location": "Rome", "items": [ … ]}]. Remove the key entirely if this trip has no must-do list');
+    } else {
+      const seenLoc = [], mdIds = new Set();
+      let mdCount = 0, unprefixed = 0;
+      d.mustDos.forEach((g, gi) => {
+        const gl = 'mustDos[' + gi + '] ("' + ((g && g.location) || '?') + '")';
+        if (!isObj(g)) { err(gl + ' must be an object {location, emoji?, items:[…]}'); return; }
+        if (!isStr(g.location) || !g.location.trim()) err(gl + ' needs a "location" — the name of the place this group is for (one group per stopping location)');
+        else { if (seenLoc.includes(g.location)) warn(gl + ': two groups share the location "' + g.location + '" — the app shows them as separate headings. Merge them into one group'); seenLoc.push(g.location); }
+        if (g.emoji !== undefined && !isStr(g.emoji)) warn(gl + ': "emoji" should be a string (or leave it out)');
+        if (!Array.isArray(g.items) || !g.items.length) { err(gl + ' needs a non-empty "items" array — a group with nothing in it is not shown at all'); return; }
+        g.items.forEach((it, ii) => {
+          const il = gl + '.items[' + ii + '] ("' + ((it && (it.id || it.name)) || '?') + '")';
+          if (!isObj(it)) { err(il + ' must be an object {id, name, cat, desc?, ll?, link?, note?}'); return; }
+          mdCount++;
+          for (const k of ['id', 'name', 'cat']) if (!isStr(it[k]) || !it[k]) err(il + ' needs string "' + k + '"');
+          if (it.id) {
+            if (actIds.has(it.id)) err(il + ': id "' + it.id + '" is already an activity id — votes and day-plan rows are stored per id, so the two would share each other\'s stars. Rename it (must-do ids are usually "md_something")');
+            else if (mdIds.has(it.id)) err(il + ': duplicate must-do id "' + it.id + '"');
+            mdIds.add(it.id);
+            if (it.id.slice(0, 3) !== 'md_') unprefixed++;
+          }
+          if (it.cat && d.categories && !d.categories[it.cat])
+            err(il + ': cat "' + it.cat + '" is not a key of categories — it renders as a gray 📍 badge');
+          if (it.ll != null && !isLL(it.ll)) warn(il + ': "ll" should be [lat, lng] numbers — without it there is no map pin for this must-do');
+          for (const k of ['desc', 'link', 'note']) if (it[k] !== undefined && !isStr(it[k])) warn(il + ': "' + k + '" should be a string (or leave it out)');
+        });
+      });
+      if (unprefixed) warn('mustDos: ' + unprefixed + ' item id(s) do not start with "md_" — that is only a convention, but the prefix is what keeps must-do ids from ever colliding with activity ids');
+      if (mdCount) ok('mustDos: ' + mdCount + ' must-do item(s) across ' + d.mustDos.length + ' location group(s)');
+    }
+  }
+
+  // ── the content bar (WARNINGS only) ────────────────────────────────────────
+  // BUILD_WITH_AI.md's mega-prompt asks the AI for >=10 activities a day, >=3
+  // per traveler per day, and a mustDos block. Falling short breaks nothing, so
+  // none of this is ever an error — errors stay reserved for structural
+  // breakage. These are the lines a family pastes back into the AI chat, so each
+  // one names the shortfall AND the fix, in words a non-technical reader can act
+  // on without knowing the schema.
+  const MIN_PER_DAY = 10, MIN_PER_TRAVELER = 3;
+  // "A", "A and B", "A, B and C" — five names joined by " and " is unreadable,
+  // and these lines get pasted into a chat window as-is.
+  const listOf = xs => xs.length < 2 ? (xs[0] || '') : xs.slice(0, -1).join(', ') + ' and ' + xs[xs.length - 1];
+  const dayName = (day, di) => (isStr(day.label) && day.label ? day.label : 'Day ' + (di + 1)) +
+    (isStr(day.location) && day.location ? ' ("' + day.location + '")' : '');
+  let barMisses = 0;
+  days.forEach((day, di) => {
+    const acts = Array.isArray(day.activities) ? day.activities : [];
+    const nm = dayName(day, di);
+    if (acts.length < MIN_PER_DAY) {
+      barMisses++;
+      warn(nm + ' has ' + acts.length + ' ' + (acts.length === 1 ? 'activity' : 'activities') +
+        ' — the guide asks for at least ' + MIN_PER_DAY + ', so there is enough for the family to vote on. ' +
+        'Ask your AI to add more options for that day.');
+    }
+    // Coverage is counted through the "who" arrays: one activity can serve
+    // several travelers, so this is NOT "3 entries per person".
+    // Reported once per DAY rather than once per person-day — five travelers
+    // over a thin week would otherwise bury the reader in near-identical lines.
+    if (!acts.length || !famNames.length) return;
+    const short = famNames
+      .map(n => ({ n, c: acts.filter(a => Array.isArray(a.who) && a.who.includes(n)).length }))
+      .filter(x => x.c < MIN_PER_TRAVELER);
+    if (short.length) {
+      barMisses++;
+      const everyone = short.length === famNames.length;
+      warn(nm + (everyone
+          ? ' leaves everyone short (' + short.map(x => x.n + ' ' + x.c).join(', ') + ')'
+          : ' leaves ' + listOf(short.map(x => x.n + ' with ' + x.c))) +
+        ' — the guide asks for at least ' + MIN_PER_TRAVELER + ' activities for every traveler on every day. ' +
+        'An activity counts for everyone listed in its "who", so ask your AI to add options for that day that ' +
+        (everyone ? 'genuinely suit the different people in the family' :
+          'genuinely suit ' + listOf(short.map(x => x.n))) +
+        ' (not to paste ' + (short.length === 1 ? 'that name' : 'those names') +
+        ' onto activities they would not enjoy).');
+    }
+  });
+  if (!('mustDos' in d)) {
+    barMisses++;
+    warn('This trip has no "Must see & do" list (the "mustDos" block) — that is the trip-wide list of ' +
+      'landmarks and experiences everyone can star, separate from the day-by-day plans. Ask your AI to add ' +
+      'one group per place you stop in, with as many items as that place genuinely earns (usually 5-15).');
+  }
+  if (!barMisses && days.length) ok('content: every day has ' + MIN_PER_DAY + '+ activities, every traveler has ' +
+    MIN_PER_TRAVELER + '+ on every day, and the trip has a Must see & do list');
+
   return result();
 }
 

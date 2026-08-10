@@ -18,13 +18,19 @@
 # then gates on /api/health matching the local package.json version.
 set -euo pipefail
 
-# ===================== EDIT THESE =====================
+# ========== EDIT THESE (or use deploy/deploy.local.env) ==========
 SERVER="root@YOUR_SERVER_IP"          # e.g. root@203.0.113.10
 SSH_KEY="$HOME/.ssh/YOUR_KEY"         # e.g. ~/.ssh/id_ed25519
-# ======================================================
+# =================================================================
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
+
+# Real credentials live in deploy/deploy.local.env (gitignored — copy
+# deploy/deploy.local.env.example). When present it overrides the placeholders
+# above, so the tracked script never needs editing; editing in place still
+# works as before when the file is absent.
+[ -f "$HERE/deploy.local.env" ] && . "$HERE/deploy.local.env"
 CONF="$HERE/instances.local.conf"
 [ -f "$CONF" ] || CONF="$HERE/instances.conf"
 

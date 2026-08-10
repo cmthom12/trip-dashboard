@@ -129,5 +129,7 @@ function summary() {
   console.log('');
   if (!errors && !warnings) console.log('✅ All good — this trip-data should render cleanly.');
   else console.log((errors ? '❌ ' : '✅ ') + errors + ' error(s), ' + warnings + ' warning(s).' +
-    (errors ? ' Fix the ✗ lines before pasting into the app (or ask your AI to).' : ' Warnings are cosmetic or minor — read them once, then decide.'));
+    (errors ? ' Fix the ✗ lines before pasting into the app (or ask your AI to).'
+            : ' Nothing is broken. Warnings about thin days, travelers with too little to vote on,' +
+              ' or a missing Must see & do list are worth pasting back to your AI; the rest are cosmetic.'));
 }

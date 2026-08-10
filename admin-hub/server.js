@@ -16,6 +16,7 @@ const app = express();
 
 const PORT = process.env.PORT || 3010;
 const TRIPS_ROOT = process.env.TRIPS_ROOT || '/var/www/trips';
+const BACKUPS_ROOT = process.env.BACKUPS_ROOT || '/root/db-backups';
 const FANOUT_TIMEOUT_MS = 3000;
 const APP_VERSION = (() => { try { return require('./package.json').version || ''; } catch (e) { return ''; } })();
 
@@ -53,6 +54,27 @@ function discoverInstances() {
   return out.sort((a, b) => a.name.localeCompare(b.name));
 }
 
+// Nightly droplet backups (deploy/backup-all.sh) land OUTSIDE each instance's
+// app dir, in BACKUPS_ROOT/<instance>/data.db.YYYYMMDD-HHMM — the instances'
+// own /api/admin/overview can't see them, so the hub counts them here. The
+// prefix match mirrors backup-all.sh's prune glob (data.db.*). An absent dir
+// (local dev, or an instance never yet backed up) is 0/none, not an error.
+function readBackups(name) {
+  let files = [];
+  const dir = path.join(BACKUPS_ROOT, name);
+  try { files = fs.readdirSync(dir); } catch (e) { return { count: 0, latestMtime: null }; }
+  let count = 0, latest = null;
+  for (const f of files) {
+    if (!f.startsWith('data.db.')) continue;
+    count++;
+    try {
+      const m = fs.statSync(path.join(dir, f)).mtime.toISOString();
+      if (!latest || m > latest) latest = m;
+    } catch (e) {}
+  }
+  return { count, latestMtime: latest };
+}
+
 async function fetchInstance(port, route, headers) {
   const res = await fetch('http://localhost:' + port + route, {
     headers: headers || {},
@@ -86,13 +108,21 @@ app.get('/api/overview', async (req, res) => {
   const results = await Promise.allSettled(
     instances.map(i => fetchInstance(i.port, '/api/admin/overview', { 'X-Admin-Key': key }))
   );
+  // The hub holds no secrets, so it cannot verify X-Admin-Key itself — it
+  // trusts the instances' verdict instead: backup metadata is included only
+  // when at least one instance accepted the key on THIS fetch. Authenticated
+  // callers still see backups for down/unreachable instances (exactly when
+  // the droplet backups matter most); callers whom no instance accepted get
+  // no backups field at all.
+  const keyAccepted = results.some(r => r.status === 'fulfilled' && r.value.status === 200);
   res.json(instances.map((i, idx) => {
     const r = results[idx];
-    if (r.status !== 'fulfilled') return { name: i.name, ok: false, status: 0, error: 'unreachable' };
+    const withBackups = row => keyAccepted ? { ...row, backups: readBackups(i.name) } : row;
+    if (r.status !== 'fulfilled') return withBackups({ name: i.name, ok: false, status: 0, error: 'unreachable' });
     const ok = r.value.status === 200;
-    return ok ? { name: i.name, ok, status: 200, data: r.value.data }
-              : { name: i.name, ok, status: r.value.status,
-                  error: (r.value.data && r.value.data.error) || ('HTTP ' + r.value.status) };
+    return withBackups(ok ? { name: i.name, ok, status: 200, data: r.value.data }
+                          : { name: i.name, ok, status: r.value.status,
+                              error: (r.value.data && r.value.data.error) || ('HTTP ' + r.value.status) });
   }));
 });
 

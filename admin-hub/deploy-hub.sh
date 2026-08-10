@@ -11,14 +11,19 @@
 # exist (docs/MULTI_INSTANCE.md §ADMIN-HUB first-time install).
 set -euo pipefail
 
-# ===================== EDIT THESE =====================
+# ========== EDIT THESE (or use deploy/deploy.local.env) ==========
 SERVER="root@YOUR_SERVER_IP"          # e.g. root@203.0.113.10
 SSH_KEY="$HOME/.ssh/YOUR_KEY"         # e.g. ~/.ssh/id_ed25519
 HUB_DIR="/var/www/admin-hub"          # NEVER under /var/www/trips (self-discovery hazard)
 HUB_PORT="3010"                       # must match the hub's .env PORT
-# ======================================================
+# =================================================================
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
+
+# Same credential file as deploy/deploy.sh (gitignored — copy
+# deploy/deploy.local.env.example): one place for SERVER/SSH_KEY, and it may
+# also override HUB_DIR/HUB_PORT. Absent file = placeholders above, as before.
+[ -f "$HERE/../deploy/deploy.local.env" ] && . "$HERE/../deploy/deploy.local.env"
 LOCAL_VER="$(cd "$HERE" && node -p "require('./package.json').version")"
 SSH="ssh -i ${SSH_KEY}"
 SCP="scp -i ${SSH_KEY}"

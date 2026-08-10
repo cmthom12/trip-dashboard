@@ -12,6 +12,9 @@ node_modules/
 # Real instance map for deploy/deploy.sh (names, dirs, ports) — examples ship in
 # deploy/instances.conf; your actual rows stay local
 deploy/instances.local.conf
+# Real deploy credentials (SERVER/SSH_KEY) for deploy.sh + deploy-hub.sh —
+# template ships deploy/deploy.local.env.example
+deploy/deploy.local.env
 *.log
 npm-debug.log*
 

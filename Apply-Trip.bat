@@ -16,6 +16,10 @@ echo.
 echo  First, save the JSON your AI gave you as a file in this folder
 echo  (see BUILD_WITH_AI.md). The usual name is my-trip.json
 echo.
+echo  Note: this is the FRESH-START installer. If you've already used the
+echo  dashboard and want to keep its PINs/votes, import your JSON on the
+echo  admin page instead (see ADMIN.md) - the tool below explains both.
+echo.
 set "TRIPFILE=my-trip.json"
 set /p "TRIPFILE=Trip file name [press Enter for my-trip.json]: "
 if not exist "%TRIPFILE%" (
