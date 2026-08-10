@@ -53,7 +53,8 @@ module.exports = {
       PORT: ENV.PORT || 3000,
       NODE_ENV: ENV.NODE_ENV || 'production',
       ADMIN_KEY: ENV.ADMIN_KEY || '',
-      CORS_ORIGIN: ENV.CORS_ORIGIN || ''
+      CORS_ORIGIN: ENV.CORS_ORIGIN || '',
+      FAMILY_SSO_SECRET: ENV.FAMILY_SSO_SECRET || ''
     },
     instances: 1,
     exec_mode: 'fork',

@@ -329,6 +329,59 @@ app.get('/api/me', (req, res) => {
   res.json({ ok: true, name: row.name });
 });
 
+// ── FAMILY SSO: accept a session minted by the family portal ────────────────
+// Opt-in PER INSTANCE and invisible when off: with no FAMILY_SSO_SECRET in the
+// environment this route 404s, so an instance that never joins the portal is
+// byte-for-byte the app it was before. deploy/sync-sso-secret.sh is what puts
+// the shared secret into an instance's .env.
+//
+// The portal signs a self-contained cookie (family-hub/lib/sso.js) — the format
+// is duplicated below on purpose, because a deployed instance has no access to
+// the portal's tree. Keep the two in step.
+//
+// This mints a session EXACTLY like POST /api/login does, minus the users-table
+// work: user_tokens is the sole authority for a token, so no users row is
+// needed and none is created. The PIN lives at the portal; this instance never
+// sees one, and a guest (no portal account, no cookie) is unaffected — as is
+// anyone whose cookie names someone this trip doesn't list.
+const SSO_SECRET = String(process.env.FAMILY_SSO_SECRET || '').trim();
+const _ssoB64u = buf => Buffer.from(buf).toString('base64url');
+const _ssoCookie = (header, name) => {
+  if (!header) return '';
+  for (const part of String(header).split(';')) {
+    const i = part.indexOf('=');
+    if (i < 1 || part.slice(0, i).trim() !== name) continue;
+    try { return decodeURIComponent(part.slice(i + 1).trim()); } catch (e) { return part.slice(i + 1).trim(); }
+  }
+  return '';
+};
+// Returns the claimed name, or '' for every failure (missing, malformed, bad
+// signature, expired) — the client treats them all the same: show the PIN screen.
+const _ssoVerify = value => {
+  if (!SSO_SECRET || typeof value !== 'string') return '';
+  const dot = value.indexOf('.');
+  if (dot < 1 || dot === value.length - 1) return '';
+  const part1 = value.slice(0, dot), sig = value.slice(dot + 1);
+  const want = _ssoB64u(crypto.createHmac('sha256', SSO_SECRET).update(part1).digest());
+  if (sig.length !== want.length) return ''; // timingSafeEqual throws on length mismatch
+  if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(want))) return '';
+  let p;
+  try { p = JSON.parse(Buffer.from(part1, 'base64url').toString('utf8')); } catch (e) { return ''; }
+  if (!p || typeof p.n !== 'string' || !p.n) return '';
+  if (typeof p.exp !== 'number' || !(p.exp > Date.now())) return '';
+  return p.n;
+};
+
+app.get('/api/sso', (req, res) => {
+  if (!SSO_SECRET) return res.status(404).json({ error: 'Not found' });
+  const name = _ssoVerify(_ssoCookie(req.headers.cookie, 'fam_sso'));
+  if (!name) return res.status(401).json({ error: 'No portal session' });
+  if (!allowedNames().includes(name)) return res.status(401).json({ error: 'Not on this trip' });
+  const token = crypto.randomBytes(16).toString('hex');
+  db.prepare('INSERT OR IGNORE INTO user_tokens (token, name) VALUES (?, ?)').run(token, name);
+  res.json({ ok: true, token, name });
+});
+
 app.get('/api/interests', (req, res) => {
   const rows = db.prepare('SELECT * FROM interests').all();
   const result = {}; rows.forEach(r => { result[r.activity_id] = JSON.parse(r.names); });

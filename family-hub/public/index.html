@@ -1,0 +1,342 @@
+<!doctype html>
+<!-- family-hub UI — the family-facing launcher. Plain vanilla JS on purpose:
+     same precedent as admin-hub/public/index.html, and this page is far simpler
+     than the trip PWA (no offline outbox, no writes), so it needs no vendored
+     React, no build step, no service worker and no CDN.
+
+     v1.1.0 adds sign-in. Who you are is decided by GET /api/portal/me (the
+     signed fam_sso cookie), NEVER by localStorage — the stored name is only a
+     display hint so the header can render before that request lands. The PIN
+     screen deliberately mirrors the trip app's so it reads as the same product.
+
+     The family list is not in this file: GET /api/config serves it from the
+     portal's .env, so names live in one place and no tracked file carries a
+     real one. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>Our Trips</title>
+<style>
+  :root {
+    --navy: #0D2B4E;
+    --gold: #C9A227;
+    --emerald: #10B981;
+    --ink: #111827;
+    --muted: #6B7280;
+    --bg: #F3F4F6;
+    --line: #E5E7EB;
+  }
+  * { box-sizing: border-box; }
+  body { font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; margin: 0; background: var(--bg); color: var(--ink); }
+
+  header { background: var(--navy); color: #fff; padding: 16px 18px; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  header h1 { font-size: 17px; margin: 0; font-weight: 800; letter-spacing: .01em; }
+  header .who { font-size: 13px; color: #ffffffcc; display: flex; align-items: center; gap: 10px; }
+  header .switch { background: none; border: none; color: var(--gold); font: inherit; font-size: 13px; font-weight: 700; text-decoration: underline; cursor: pointer; padding: 8px 4px; }
+
+  main { max-width: 720px; margin: 0 auto; padding: 16px 14px 40px; }
+
+  /* Sign-in — navy full-bleed card, deliberately the trip app's look. */
+  .auth { min-height: 100vh; background: var(--navy); display: flex; align-items: center; justify-content: center; padding: 20px; }
+  .auth .box { background: #fff; border-radius: 24px; padding: 28px; width: 100%; max-width: 360px; box-shadow: 0 25px 70px rgba(0,0,0,.4); }
+  .auth .brandline { text-align: center; margin-bottom: 20px; }
+  .auth .brandline .k { color: var(--gold); font-size: 14px; font-weight: 900; letter-spacing: 2px; }
+  .auth .brandline .t { color: var(--navy); font-size: 24px; font-weight: 900; line-height: 1.1; margin-top: 4px; }
+  .auth .brandline .s { color: #9CA3AF; font-size: 12px; margin-top: 6px; }
+  .auth h2 { font-size: 13px; font-weight: 600; color: var(--muted); margin: 0 0 10px; text-align: center; }
+  .names { display: flex; flex-direction: column; gap: 8px; }
+  .names button { width: 100%; font: inherit; font-size: 16px; font-weight: 700; color: var(--navy); background: #F3F4F6;
+                  border: none; border-radius: 14px; cursor: pointer; padding: 14px 16px; text-align: left;
+                  display: flex; justify-content: space-between; align-items: center; }
+  .names button:active { background: #E5E7EB; }
+  .names button .tag { font-size: 11px; font-weight: 600; opacity: .7; }
+  .back { background: none; border: none; color: #9CA3AF; font: inherit; font-size: 13px; cursor: pointer; margin-bottom: 12px; padding: 0; }
+  .hi { font-size: 18px; font-weight: 800; color: var(--navy); margin-bottom: 4px; }
+  .lead { font-size: 13px; color: var(--muted); margin-bottom: 16px; }
+  #pin { width: 100%; text-align: center; letter-spacing: 12px; font: inherit; font-size: 28px; font-weight: 800;
+         padding: 14px; border: 2px solid var(--line); border-radius: 14px; outline: none; color: var(--navy); }
+  .go-btn { width: 100%; margin-top: 14px; font: inherit; font-size: 16px; font-weight: 800; color: #fff; background: var(--navy);
+            border: none; border-radius: 14px; padding: 14px; cursor: pointer; }
+  .go-btn[disabled] { opacity: .5; cursor: default; }
+  .err { color: #DC2626; font-size: 13px; font-weight: 600; margin-top: 10px; text-align: center; }
+  .locked { background: #FEF2F2; border: 1px solid #FECACA; border-radius: 12px; padding: 10px 12px; margin-top: 12px; text-align: center; }
+  .locked b { color: #B91C1C; font-size: 13px; }
+  .locked span { display: block; color: #DC2626; font-size: 12px; margin-top: 3px; }
+  .foot { font-size: 11.5px; color: #9CA3AF; margin-top: 14px; text-align: center; line-height: 1.45; }
+
+  .card { display: block; text-decoration: none; color: inherit; background: #fff; border: 2px solid transparent;
+          border-radius: 14px; padding: 16px; margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .card:active { box-shadow: 0 1px 8px rgba(13,43,78,.18); }
+  .card.mine { border-color: var(--gold); box-shadow: 0 2px 10px rgba(201,162,39,.22); }
+  .card.down { opacity: .55; box-shadow: none; }
+  .brand { font-size: 11px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+  .card h2 { font-size: 19px; margin: 3px 0 8px; color: var(--navy); line-height: 1.25; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .chip { font-size: 12px; font-weight: 700; border-radius: 999px; padding: 4px 10px; }
+  .chip.now { background: #D1FAE5; color: #065F46; }
+  .chip.soon { background: #E5EDF7; color: var(--navy); }
+  .chip.past { background: #F3F4F6; color: var(--muted); }
+  .chip.you { background: var(--gold); color: var(--navy); }
+  .chip.off { background: #FEE2E2; color: #991B1B; }
+  .dates { font-size: 14px; color: var(--ink); font-weight: 600; }
+  .who-list { font-size: 13px; color: var(--muted); margin-top: 6px; }
+  .go { margin-top: 10px; font-size: 14px; font-weight: 800; color: var(--emerald); }
+  .msg { color: var(--muted); text-align: center; padding: 34px 10px; font-size: 15px; }
+  .banner { background: #FEF3C7; color: #92400E; font-size: 12.5px; border-radius: 12px; padding: 10px 12px; margin-bottom: 14px; }
+</style>
+</head>
+<body>
+<div id="app"><main><p class="msg">Loading…</p></main></div>
+<script>
+'use strict';
+
+var NAME_KEY = 'portal_name';       // display hint only — the cookie is the truth
+var $app = document.getElementById('app');
+var CFG = { names: [], suffix: '', sso: false, registered: [] };
+var ME = '';                        // the signed-in name, per /api/portal/me
+var LOCK_KEY = 'portal_lock_';      // per-name lockout deadline, mirrors the trip app
+
+function esc(s) { var d = document.createElement('div'); d.textContent = String(s == null ? '' : s); return d.innerHTML; }
+function ls(k) { try { return localStorage.getItem(k) || ''; } catch (e) { return ''; } }
+function setLs(k, v) { try { v ? localStorage.setItem(k, v) : localStorage.removeItem(k); } catch (e) {} }
+
+// Local calendar day as YYYY-MM-DD, so it compares directly against the trip's
+// own date strings without ever constructing a Date from them (which would drag
+// the browser's timezone into a plain calendar date and shift trips by a day).
+function today() {
+  var d = new Date(), p = function (n) { return (n < 10 ? '0' : '') + n; };
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+}
+
+var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+function pretty(iso) {
+  var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || '');
+  return m ? MONTHS[+m[2] - 1] + ' ' + +m[3] + ', ' + m[1] : '';
+}
+function dateRange(a, b) {
+  var A = pretty(a), B = pretty(b);
+  if (!A && !B) return 'Dates to be confirmed';
+  if (!B || A === B) return A || B;
+  // Same year reads better without repeating it: "Sep 5 – Sep 8, 2026".
+  if (a.slice(0, 4) === b.slice(0, 4)) return A.replace(', ' + a.slice(0, 4), '') + ' – ' + B;
+  return A + ' – ' + B;
+}
+function status(t) {
+  if (!t.startDate || !t.endDate) return null;
+  var now = today();
+  if (now < t.startDate) return { cls: 'soon', label: 'Upcoming' };
+  if (now > t.endDate) return { cls: 'past', label: 'Past' };
+  return { cls: 'now', label: 'Happening now' };
+}
+
+function card(t, me) {
+  var mine = me && t.family.indexOf(me) !== -1;
+  var st = status(t);
+  var chips = '';
+  if (mine) chips += '<span class="chip you">You’re on this trip</span>';
+  if (st) chips += '<span class="chip ' + st.cls + '">' + st.label + '</span>';
+  if (!t.reachable) chips += '<span class="chip off">Temporarily unavailable</span>';
+
+  var body =
+    (t.brand ? '<div class="brand">' + esc(t.brand) + '</div>' : '') +
+    '<h2>' + esc(t.title) + '</h2>' +
+    (chips ? '<div class="chips">' + chips + '</div>' : '') +
+    (t.reachable
+      ? '<div class="dates">' + esc(dateRange(t.startDate, t.endDate)) + '</div>' +
+        (t.family.length ? '<div class="who-list">' + esc(t.family.slice(0, 4).join(', ')) +
+          (t.family.length > 4 ? ' +' + (t.family.length - 4) + ' more' : '') + '</div>' : '') +
+        '<div class="go">Open this trip →</div>'
+      : '<div class="who-list">This trip’s dashboard isn’t responding right now. Try again in a few minutes.</div>');
+
+  // Unreachable trips are a plain div, not a link: sending someone to a site
+  // that just failed its own health check is worse than showing it greyed out.
+  return t.reachable
+    ? '<a class="card' + (mine ? ' mine' : '') + '" href="' + esc(t.url) + '">' + body + '</a>'
+    : '<div class="card down">' + body + '</div>';
+}
+
+// Mine first, then everyone else's; each group by start date ascending. Trips
+// with no start date sort to the end of their group rather than to the top.
+function sortTrips(trips, me) {
+  var key = function (t) { return t.startDate || '9999-12-31'; };
+  return trips.slice().sort(function (a, b) {
+    var am = me && a.family.indexOf(me) !== -1 ? 0 : 1;
+    var bm = me && b.family.indexOf(me) !== -1 ? 0 : 1;
+    if (am !== bm) return am - bm;
+    if (key(a) !== key(b)) return key(a) < key(b) ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+}
+
+// ── sign-in ────────────────────────────────────────────────────────────────
+function authShell(inner) {
+  $app.innerHTML =
+    '<div class="auth"><div class="box">' +
+    '<div class="brandline"><div class="k">OUR TRIPS</div>' +
+    '<div class="t">Family trip planner</div>' +
+    '<div class="s">One sign-in for every trip</div></div>' +
+    inner + '</div></div>';
+}
+
+function showPicker() {
+  authShell(
+    '<h2>Who are you?</h2><div class="names">' +
+    CFG.names.map(function (n) {
+      var reg = CFG.registered.indexOf(n) !== -1;
+      return '<button type="button" data-name="' + esc(n) + '"><span>' + esc(n) + '</span>' +
+             '<span class="tag">' + (reg ? '🔒 has PIN' : '+ set PIN') + '</span></button>';
+    }).join('') +
+    '</div>' +
+    (CFG.sso ? '' : '<div class="foot">Automatic sign-in on your trips is off right now — ' +
+      'you’ll still sign in on each trip’s own page.</div>'));
+  Array.prototype.forEach.call($app.querySelectorAll('.names button'), function (b) {
+    b.addEventListener('click', function () { showPin(b.getAttribute('data-name')); });
+  });
+}
+
+function showPin(who) {
+  var lockUntil = parseInt(ls(LOCK_KEY + who) || '0', 10) || 0;
+  var isNew = CFG.registered.indexOf(who) === -1;
+  var timer = null;
+
+  function draw(err) {
+    var left = Math.max(0, lockUntil - Date.now());
+    var mm = String(Math.floor(left / 60000));
+    var ss = String(Math.floor(left / 1000) % 60);
+    if (mm.length < 2) mm = '0' + mm;
+    if (ss.length < 2) ss = '0' + ss;
+    authShell(
+      '<button class="back" type="button" id="back">← Back</button>' +
+      '<div class="hi">Hi, ' + esc(who) + '</div>' +
+      '<div class="lead">' + (isNew
+        ? 'Set a 4-digit PIN — you’ll use it here and on every trip.'
+        : 'Enter your 4-digit PIN.') + '</div>' +
+      '<input id="pin" type="tel" inputmode="numeric" maxlength="4" placeholder="• • • •"' +
+        (left > 0 ? ' disabled' : '') + '>' +
+      '<button class="go-btn" type="button" id="submit"' + (left > 0 ? ' disabled' : '') + '>' +
+        (isNew ? 'Set PIN' : 'Sign in') + '</button>' +
+      (left > 0 ? '<div class="locked"><b>🔒 Too many attempts</b>' +
+        '<span>Locked for security — try again in ' + mm + ':' + ss + '.</span></div>' : '') +
+      (err ? '<div class="err">' + esc(err) + '</div>' : '') +
+      (CFG.sso ? '<div class="foot">Sign in once here and every trip you’re on opens already signed in.</div>'
+               : '<div class="foot">Automatic sign-in is off right now — each trip will still ask for its own PIN.</div>'));
+
+    document.getElementById('back').addEventListener('click', function () {
+      if (timer) clearInterval(timer);
+      showPicker();
+    });
+    var $pin = document.getElementById('pin');
+    var $go = document.getElementById('submit');
+    $pin.addEventListener('input', function () { $pin.value = $pin.value.replace(/\D/g, '').slice(0, 4); });
+    $pin.addEventListener('keydown', function (e) { if (e.key === 'Enter') submit(); });
+    $go.addEventListener('click', submit);
+    if (left <= 0) $pin.focus();
+
+    // One ticker while locked, cleared as soon as the countdown reaches zero
+    // (draw() re-renders unlocked) or the screen is left.
+    if (timer) clearInterval(timer);
+    if (left > 0) timer = setInterval(function () {
+      if (Date.now() >= lockUntil) { clearInterval(timer); timer = null; draw(''); }
+      else draw('');
+    }, 1000);
+
+    function submit() {
+      var pin = $pin.value;
+      if (!/^\d{4}$/.test(pin)) return draw('Enter a 4-digit PIN');
+      $go.disabled = true;
+      fetch('/api/portal/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ name: who, pin: pin })
+      }).then(function (r) {
+        return r.json().catch(function () { return {}; }).then(function (d) { return { r: r, d: d }; });
+      }).then(function (o) {
+        if (o.r.ok && o.d.ok) {
+          if (timer) clearInterval(timer);
+          setLs(LOCK_KEY + who, '');
+          setLs(NAME_KEY, who);
+          ME = who;
+          return showTrips(o.d.firstTime);
+        }
+        if (o.r.status === 429) {
+          lockUntil = Date.now() + (o.d.retryMs || 1800000);
+          setLs(LOCK_KEY + who, String(lockUntil));
+          return draw('');
+        }
+        draw(typeof o.d.attemptsLeft === 'number'
+          ? 'Incorrect PIN — ' + o.d.attemptsLeft + (o.d.attemptsLeft === 1 ? ' try left' : ' tries left')
+          : (o.d.error || 'Sign-in failed'));
+      }).catch(function () { draw('Can’t reach the server — check your connection'); });
+    }
+  }
+  draw('');
+}
+
+function signOut() {
+  fetch('/api/portal/logout', { method: 'POST', credentials: 'same-origin' })
+    .catch(function () {})
+    .then(function () { setLs(NAME_KEY, ''); ME = ''; boot(); });
+}
+
+// ── trip list ──────────────────────────────────────────────────────────────
+function showTrips(justSignedIn) {
+  $app.innerHTML =
+    '<header><h1>Our Trips</h1><div class="who"><span>Hi, ' + esc(ME) + '</span>' +
+    '<button class="switch" type="button" id="switchBtn">sign out</button></div></header>' +
+    '<main id="main">' +
+    (justSignedIn && CFG.sso
+      ? '<div class="banner">You’re signed in — open any trip below and it will already know it’s you.</div>'
+      : '') +
+    '<p class="msg">Loading trips…</p></main>';
+  document.getElementById('switchBtn').addEventListener('click', signOut);
+  var $main = document.getElementById('main');
+  var keep = $main.querySelector('.banner');
+  fetch('/api/trips')
+    .then(function (r) { return r.json(); })
+    .then(function (trips) {
+      $main.innerHTML = (keep ? keep.outerHTML : '') + (trips.length
+        ? sortTrips(trips, ME).map(function (t) { return card(t, ME); }).join('')
+        : '<p class="msg">No trips are set up yet.</p>');
+    })
+    .catch(function () {
+      $main.innerHTML = '<p class="msg">Couldn’t load the trip list. Check your connection and refresh.</p>';
+    });
+}
+
+// ── boot ───────────────────────────────────────────────────────────────────
+// Config first (it carries the names and whether SSO is on), then identity.
+// With SSO on, the cookie decides — a stale localStorage name never grants a
+// session. With SSO off there is no cookie to ask about, so the portal falls
+// back to its Phase-1 behavior: the remembered name drives highlighting only.
+function boot() {
+  fetch('/api/config')
+    .then(function (r) { return r.json(); })
+    .then(function (cfg) {
+      CFG = {
+        names: cfg.names || [], suffix: cfg.suffix || '',
+        sso: !!cfg.sso, registered: cfg.registered || []
+      };
+      if (!CFG.sso) {
+        ME = ls(NAME_KEY);
+        return CFG.names.indexOf(ME) !== -1 ? showTrips(false) : showPicker();
+      }
+      return fetch('/api/portal/me', { credentials: 'same-origin' })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) {
+          if (d && d.name) { ME = d.name; setLs(NAME_KEY, ME); return showTrips(false); }
+          setLs(NAME_KEY, '');
+          showPicker();
+        });
+    })
+    .catch(function () {
+      $app.innerHTML = '<main><p class="msg">Couldn’t reach the portal. Check your connection and refresh.</p></main>';
+    });
+}
+
+boot();
+</script>
+</body>
+</html>

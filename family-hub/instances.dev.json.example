@@ -1,0 +1,7 @@
+{
+  "_comment": "Dev-only instance map. Copy to family-hub/instances.dev.json (gitignored) and point it at real HTTPS instances to work on the portal from a laptop. Used ONLY when TRIPS_DIR does not exist — on the droplet, discovery reads /var/www/trips and this file is ignored. Keys are instance names (the subdomain label); baseUrl is where /api/trip is fetched from.",
+  "instances": {
+    "sample-trip": { "baseUrl": "https://sample-trip.example.com" },
+    "another-trip": { "baseUrl": "https://another-trip.example.com" }
+  }
+}

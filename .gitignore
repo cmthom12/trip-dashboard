@@ -15,6 +15,11 @@ deploy/instances.local.conf
 # Real deploy credentials (SERVER/SSH_KEY) for deploy.sh + deploy-hub.sh —
 # template ships deploy/deploy.local.env.example
 deploy/deploy.local.env
+# family-hub's runtime config (.env is already covered above, listed here for
+# grep-ability) and its dev-only instance map — example ships as
+# family-hub/instances.dev.json.example
+family-hub/.env
+family-hub/instances.dev.json
 *.log
 npm-debug.log*
 
@@ -35,3 +40,10 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+
+# Real trip content fed to tools/apply-trip-data.js — family names, addresses,
+# reservations. The workshop repo ships only the sample trip in public/index.html;
+# your real JSON lives in its own trip folder (~/code/family-trip-<name>/).
+my-trip.json
+trip-data.json
+*-trip.json

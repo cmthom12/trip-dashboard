@@ -6208,28 +6208,48 @@ function App() {
   const [packCollapsed, setPackCollapsed] = useState({});
   const [mapFocus, setMapFocus] = useState(null);
   useEffect(() => {
+    let u = null,
+      t = null;
     try {
-      const u = localStorage.getItem("tg_name"),
-        t = localStorage.getItem("tg_token");
-      if (u && t) {
-        setUser(u);
-        setAuthed(true);
-        fetch(API + '/api/me', {
-          headers: {
-            'X-Auth-Token': t
-          }
-        }).then(r => {
-          if (r && r.status === 401) {
-            try {
-              localStorage.removeItem("tg_name");
-              localStorage.removeItem("tg_token");
-            } catch (e) {}
-            setUser(null);
-            setAuthed(false);
-          }
-        }).catch(() => {});
-      }
+      u = localStorage.getItem("tg_name");
+      t = localStorage.getItem("tg_token");
     } catch {}
+    if (u && t) {
+      setUser(u);
+      setAuthed(true);
+      fetch(API + '/api/me', {
+        headers: {
+          'X-Auth-Token': t
+        }
+      }).then(r => {
+        if (r && r.status === 401) {
+          try {
+            localStorage.removeItem("tg_name");
+            localStorage.removeItem("tg_token");
+          } catch (e) {}
+          setUser(null);
+          setAuthed(false);
+        }
+      }).catch(() => {});
+      return;
+    }
+    // No session on this device: before showing the PIN screen, ask whether the
+    // family portal already signed this browser in. The fam_sso cookie is set on
+    // the parent domain, so it rides along with this same-origin GET. Every
+    // failure is silent and identical — 404 (this instance isn't in the portal),
+    // 401 (no/expired cookie, or a name this trip doesn't list), or offline —
+    // all fall through to the PIN screen exactly as before.
+    fetch(API + '/api/sso', {
+      credentials: 'same-origin'
+    }).then(r => r && r.ok ? r.json() : null).then(d => {
+      if (!d || !d.ok || !d.token || !d.name) return;
+      try {
+        localStorage.setItem("tg_name", d.name);
+        localStorage.setItem("tg_token", d.token);
+      } catch (e) {}
+      setUser(d.name);
+      setAuthed(true);
+    }).catch(() => {});
   }, []);
   useEffect(() => {
     if (!scrollTo || tab !== "itinerary") return;
