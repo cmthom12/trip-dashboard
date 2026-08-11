@@ -136,6 +136,14 @@ node tools/profile-export.js --db data.db --trip my-trip.json [--out <file>]
 `--trip` also accepts a `public/index.html` and pulls the trip-data block out of
 it. Without `--out` the profiles go to stdout.
 
+Before you point it at a database you are about to delete, run
+`tools/profile-rehearsal.sh`. It builds a synthetic database with the real
+schema, exports it, and asserts on the result — every traveler present, a
+zero-vote traveler degrading rather than crashing, a not-attended item never
+counted against an idea, a review on a moved day-plan row still attributed, and
+the database byte-identical afterwards. Exit 0 means the export is trustworthy
+on this machine, on this Node, today.
+
 Two rules:
 
 - **Work from a copy of the database.** The tool opens it read-only, but the

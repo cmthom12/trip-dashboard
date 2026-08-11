@@ -59,8 +59,11 @@ for name in "${INSTANCES[@]}"; do
   PROBE="no port"
   if [ -n "$PORT" ]; then
     # on connect failure curl still prints 000 for %{http_code}; don't add more
-    CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
-      -H "X-Admin-Key: $KEY" "http://localhost:${PORT}/api/admin/overview" 2>/dev/null || true)"
+    # The key goes in on stdin (-H @- reads headers from there), never on the
+    # command line: argv is world-readable in /proc and shows up in ps output.
+    # Same reason the awk rewrite above passes it through ENVIRON.
+    CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H @- \
+      "http://localhost:${PORT}/api/admin/overview" <<< "X-Admin-Key: $KEY" 2>/dev/null || true)"
     case "$CODE" in
       200) PROBE="200 ok" ;;
       000) PROBE="unreachable" ;;

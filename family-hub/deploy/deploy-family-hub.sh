@@ -37,10 +37,11 @@ SSH="ssh -i ${SSH_KEY}"
 SCP="scp -i ${SSH_KEY}"
 
 echo "==> deploying family-hub v${LOCAL_VER} to ${FAMILY_DIR}, port ${FAMILY_PORT}"
-$SSH "$SERVER" "mkdir -p ${FAMILY_DIR}/public ${FAMILY_DIR}/lib"
+$SSH "$SERVER" "mkdir -p ${FAMILY_DIR}/public ${FAMILY_DIR}/lib ${FAMILY_DIR}/deploy"
 cd "$APP"
 $SCP server.js package*.json "${SERVER}:${FAMILY_DIR}/"
 $SCP -r public lib "${SERVER}:${FAMILY_DIR}/"
+$SCP deploy/env.template deploy/ecosystem.template.config.js "${SERVER}:${FAMILY_DIR}/deploy/"
 
 echo "==> installing deps + restarting pm2 family-hub"
 $SSH "$SERVER" "cd ${FAMILY_DIR} && npm install --omit=dev"

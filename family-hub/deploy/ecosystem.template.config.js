@@ -55,6 +55,11 @@ module.exports = {
       FAMILY_NAMES: ENV.FAMILY_NAMES || '',
       FAMILY_SSO_SECRET: ENV.FAMILY_SSO_SECRET || '',
       COOKIE_DOMAIN: ENV.COOKIE_DOMAIN || '',
+      // Empty = PINs stay on the legacy bare-sha256 scheme (no behavior change).
+      // Set it and portal users migrate to peppered hashes as they next sign in.
+      PIN_PEPPER: ENV.PIN_PEPPER || '',
+      // '1' = only names that already have a PIN may sign in (first-claim off).
+      FAMILY_ROSTER_LOCKED: ENV.FAMILY_ROSTER_LOCKED || '',
       NODE_ENV: ENV.NODE_ENV || 'production'
     },
     instances: 1,

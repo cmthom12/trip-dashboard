@@ -64,6 +64,13 @@ h2{font-size:14px;color:#0D2B4E;margin:18px 0 8px}
     </div>
     <h2>Travelers</h2>
     <div id="travelers"></div>
+    <div class="card" style="margin-top:10px">
+      <div class="gl"><span>Roster claim lock</span><b id="rosterLockState">&mdash;</b></div>
+      <p style="font-size:13px;margin:8px 0">While this is <b>off</b> (the default), anyone who reaches the sign-in page can claim any unclaimed traveler name by picking a PIN. Turn it <b>on</b> once everyone has signed in at least once: unclaimed names are then refused, with the same message a wrong PIN gets, so the page gives nothing away. People who already have a PIN are unaffected.</p>
+      <div class="actions">
+        <button id="rosterLockBtn" disabled>&mdash;</button>
+      </div>
+    </div>
     <h2>Server</h2>
     <div class="card" id="globals"></div>
     <h2>Backups on server</h2>
@@ -111,7 +118,9 @@ h2{font-size:14px;color:#0D2B4E;margin:18px 0 8px}
         if (r.status === 404) { throw { disabled: true }; }
         if (r.status === 401) { sessionStorage.removeItem(KEY_STORE); showGate('That key was rejected.'); throw { handled: true }; }
         return r.json().then(function (j) {
-          if (!r.ok) throw { msg: j.error || ('HTTP ' + r.status) };
+          // body is carried through so a caller can act on structured detail
+          // (e.g. the import's orphaned-vote id list), not just the message.
+          if (!r.ok) throw { msg: j.error || ('HTTP ' + r.status), body: j };
           return j;
         });
       });
@@ -229,15 +238,36 @@ h2{font-size:14px;color:#0D2B4E;margin:18px 0 8px}
       }
       if (!window.confirm(lines.join('\n'))) return;
       $('tripImportBtn').disabled = true;
-      api('/api/trip', { method: 'POST', body: validatedTrip }).then(function (j) {
-        flash('Trip imported — now version ' + j.version + (j.warnings && j.warnings.length ? ' (' + j.warnings.length + ' warnings, see Validate output)' : ''));
-        validatedTrip = null;
-        $('tripJson').value = '';
-        $('tripReport').innerHTML = '';
-        load();
-      }).catch(function (e) { if (!(e && e.handled)) { $('tripImportBtn').disabled = false; flash((e && e.msg) || 'Import failed', true); } });
+      doImport(false);
     });
   });
+
+  function doImport(force) {
+    api('/api/trip' + (force ? '?force=1' : ''), { method: 'POST', body: validatedTrip }).then(function (j) {
+      flash('Trip imported — now version ' + j.version + (j.warnings && j.warnings.length ? ' (' + j.warnings.length + ' warnings, see Validate output)' : ''));
+      validatedTrip = null;
+      $('tripJson').value = '';
+      $('tripReport').innerHTML = '';
+      load();
+    }).catch(function (e) {
+      if (e && e.handled) return;
+      // The server refuses an import that would strand existing votes and names
+      // the ids. It is the authoritative check (it reads the votes themselves,
+      // not just the outgoing trip), so ask once here rather than making the
+      // operator hand-reconcile the JSON.
+      var orphans = (e && e.body && e.body.orphans) || [];
+      if (!force && orphans.length) {
+        var shown = orphans.slice(0, 20).join(', ') + (orphans.length > 20 ? ', … (' + (orphans.length - 20) + ' more)' : '');
+        if (window.confirm(orphans.length + ' voted activity/must-do id(s) would be orphaned by this import:\n\n' + shown
+            + '\n\nThose stars become unreachable — they will not show up anywhere in the app again. Import anyway?')) {
+          doImport(true);
+          return;
+        }
+      }
+      $('tripImportBtn').disabled = false;
+      flash((e && e.msg) || 'Import failed', true);
+    });
+  }
 
   $('tripExportBtn').addEventListener('click', function () {
     var a = document.createElement('a');
@@ -253,7 +283,35 @@ h2{font-size:14px;color:#0D2B4E;margin:18px 0 8px}
       if (e && e.disabled) { showGate('Admin is disabled on this server — set the ADMIN_KEY environment variable and restart (see ADMIN.md).'); }
       else if (!(e && e.handled)) flash((e && e.msg) || 'Could not load overview', true);
     });
+    loadRosterLock();
   }
+
+  // Roster lock is its own small route rather than part of the overview payload,
+  // so an older server that lacks it just leaves the control disabled.
+  function loadRosterLock() {
+    api('/api/admin/roster-lock').then(function (j) { renderRosterLock(!!j.locked); })
+      .catch(function () {
+        $('rosterLockState').textContent = 'unavailable';
+        $('rosterLockBtn').disabled = true;
+        $('rosterLockBtn').textContent = '—';
+      });
+  }
+  function renderRosterLock(locked) {
+    $('rosterLockState').textContent = locked ? 'ON — unclaimed names refused' : 'off — anyone may claim a free name';
+    var b = $('rosterLockBtn');
+    b.disabled = false;
+    b.textContent = locked ? 'Unlock roster' : 'Lock roster';
+    b.className = locked ? '' : 'gold';
+    b.setAttribute('data-locked', locked ? '1' : '0');
+  }
+  $('rosterLockBtn').addEventListener('click', function () {
+    var want = $('rosterLockBtn').getAttribute('data-locked') !== '1';
+    if (want && !window.confirm('Lock the roster?\n\nNames that have never signed in will no longer be able to claim a PIN. Anyone who still needs to sign in for the first time must do it before you lock, or you unlock again for them.')) return;
+    $('rosterLockBtn').disabled = true;
+    api('/api/admin/roster-lock', { method: 'POST', body: { locked: want } })
+      .then(function (j) { renderRosterLock(!!j.locked); flash(j.locked ? 'Roster locked' : 'Roster unlocked'); })
+      .catch(function (e) { if (!(e && e.handled)) flash((e && e.msg) || 'Could not change the roster lock', true); loadRosterLock(); });
+  });
 
   $('travelers').addEventListener('click', function (ev) {
     var b = ev.target.closest('button');

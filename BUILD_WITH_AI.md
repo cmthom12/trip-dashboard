@@ -22,10 +22,11 @@ result into the app. About 15 minutes start to finish.
 Copy everything in the box — **all of it, in one paste**. Replace the `<<< YOUR TRIP >>>`
 section with your own details (keep it loose — bullet points are fine), then send it.
 
-The prompt asks the AI for a **generous** trip on purpose: at least 10 activities on every
-day, at least 3 for each traveler on every day, and a trip-wide **Must see & do** list of
-the big regional landmarks. That's a lot of output — that's the point. The family's job in
-the app is to vote things *down*, and they can only vote on what's there.
+The prompt asks for a trip that is **full but not endless**: around 50 activities for the
+whole trip, spread evenly across the travelers, plus a trip-wide **Must see & do** list of
+the big regional landmarks. The family's job in the app is to vote things *down*, and they
+can only vote on what's there — but past roughly fifty options, scrolling becomes a chore
+and the genuinely good ideas get lost among the merely fine ones.
 
 ```
 You are helping me fill in the data file for a self-hosted "family trip dashboard" web app.
@@ -45,29 +46,39 @@ purposes it is required. See the must-dos section below.
 
 === THE CONTENT BAR — READ THIS TWICE ===
 This app is a VOTING tool. My family's job is to DISCARD options, never to go find more.
-A thin trip makes the app pointless. Four rules, all of them checkable:
+But a bloated trip is as bad as a thin one: nobody votes on a list they can't finish
+scrolling. Four rules, all of them checkable:
 
-1. EVERY DAY GETS AT LEAST 10 ACTIVITIES. Ten per day, not ten for the trip. A short
-   travel day still gets ten — fill it with things near the airport, the hotel, the port.
+1. AIM FOR ABOUT 50 ACTIVITIES FOR THE WHOLE TRIP. Not per day — for the trip. That is
+   roughly the right size for anything up to about a week (a 4-day trip lands near 45-50,
+   a 6-day trip near 43); scale up only for trips genuinely longer than a week.
+   Going well OVER is the failure I care about most. If you have more than fifty good
+   ideas, CUT to the ones someone would actually be disappointed to miss — do not spread
+   the extras over more days.
+   Do NOT try to hit a floor on every day. Days do not need to be equal: a travel day or a
+   deliberately slow day can carry two or three things, and that is a plan, not a gap. The
+   planners drag activities between days in the app anyway.
 
-2. EVERY TRAVELER GETS AT LEAST 3 ACTIVITIES ON EVERY DAY. An activity's "who" array
-   lists the travelers it genuinely suits, and ONE activity can suit several people at
-   once. So this is NOT "3 activities per person per day" as separate entries — it is:
-     for each day, for each traveler, count the activities whose "who" contains that
-     name; every one of those counts must be 3 or more.
-   Before you finish, actually do that count, day by day, name by name. If someone comes
-   up short, add options that suit them — do not pad their name onto activities they'd
-   hate. A tag on the wrong activity is worse than no tag.
+2. SPREAD THE "who" TAGS EVENLY ACROSS THE TRAVELERS. An activity's "who" array lists the
+   travelers it genuinely suits, and ONE activity can suit several people at once. Add up
+   the tags per person across the whole trip; aim for each traveler to land near
+   (total tags / number of travelers).
+   Even means even-ISH. If someone engages less with this kind of planning, giving them
+   fewer but stronger, better-aimed options is right. What is wrong is a traveler sitting
+   far below everyone else, with nothing of their own to vote for.
+   Never pad a name onto an activity that person would not enjoy. A tag on the wrong
+   activity is worse than no tag — it corrupts what the app learns about them.
 
 3. USE WHAT I TOLD YOU ABOUT EACH PERSON. Each traveler's "interests" list is in the
    family array; if I pasted TRAVELER PROFILES below, they are the stronger signal (they
    come from what these people actually voted for and did on past trips) — follow them
-   over my one-line descriptions. Every traveler should see things on each day that
+   over my one-line descriptions. Every traveler should see things across the trip that
    obviously came from their own list.
 
-4. INCLUDE A "mustDos" BLOCK. See the next section — it is a different kind of content
-   from the day activities, and skipping it or duplicating the activities into it are
-   both wrong.
+4. INCLUDE A "mustDos" BLOCK. One group per place we stop in, 6-10 items in each, and each
+   group's "location" spelled EXACTLY as that day's "location". See the next section — it
+   is a different kind of content from the day activities, and skipping it or duplicating
+   the activities into it are both wrong.
 
 === MUST-DOS: REGIONAL, NOT PERSONAL ===
 "mustDos" is the answer to "we are going to be in this place — what would ANY visitor
@@ -83,13 +94,38 @@ specific people out of their interests.
 - ONE mustDos GROUP PER STOPPING LOCATION. Use the same place names as the days'
   "location" values. A trip that sleeps in three towns has three groups; a trip that
   never leaves one city has exactly one group.
-- HOW MANY ITEMS PER GROUP: as many as the place genuinely earns. Typically 5-15.
-  Never pad a thin destination to reach a number; never truncate a rich one to stay
-  under one. Rome earns 15. A quiet island stop earns 5.
+- HOW MANY ITEMS PER GROUP: 6-10. That is enough to be the real shortlist for a place
+  without turning the tab into another endless scroll. Never pad a thin destination to
+  reach six; if a quiet stop only earns four, four is the honest answer and I will take
+  the warning. Never stretch a rich one past ten — Rome has more than ten famous sights,
+  and picking the ten that matter is the job.
 - Overlap with the day activities is fine and expected — the Colosseum can be both a
   must-do (it is THE Rome landmark) and a Day 2 activity for the history lovers. When it
   is both, they are two separate entries with two different ids, written for their two
   different purposes.
+
+=== DIETARY (OPTIONAL — AND THE ONE PLACE YOU MUST NOT IMPROVISE) ===
+Some travelers have food SENSITIVITIES. These are not allergies: nobody in this family is
+at risk of a reaction. Consequences are delayed and comfort-level. So this is never a
+safety feature, and you must never write it like one — no warnings, no "safe for", no
+telling anyone to avoid a place.
+
+If I listed a traveler's sensitivities, copy them into that person's "dietary" array
+exactly as I gave them. Do not infer anyone's sensitivities from anything else.
+
+For a VENUE ("dietary" on an activity or a must-do), ONE HARD RULE:
+
+    Fill it in ONLY from a published allergen menu, or an explicit statement on the
+    venue's own website. Otherwise OMIT THE KEY ENTIRELY.
+
+Leaving it out means "we do not know", which the app shows as "not checked" — an honest
+and completely acceptable answer. A GUESS is the worst thing you can produce here: it
+looks identical to a fact and nobody can tell them apart later. If you find yourself
+reasoning "an Italian place probably has gluten-free pasta" — stop, and omit the key.
+Set "source" to where the claim actually came from, and "verified" to the date you read it.
+
+And never remove, downgrade or skip a great venue on dietary grounds. Include it, and put
+whatever is worth knowing in "practical" so people can choose for themselves.
 
 === HARD CONSTRAINTS ===
 - Output VALID JSON only — double quotes, no trailing commas, no comments.
@@ -108,16 +144,20 @@ specific people out of their interests.
 trip: { "title", "brand" (short all-caps crew name), "subtitle", "ship" (cruise name or ""),
         "startDate" "YYYY-MM-DD", "endDate" "YYYY-MM-DD", "photosUrl" "",
         "theme": {"navy":"#0D2B4E","gold":"#C9A227","emerald":"#10B981"} }
-family: [ { "name", "color": ["#hexBackground","#hexText"], "interests": ["food & wine", ...] } ]
+family: [ { "name", "color": ["#hexBackground","#hexText"], "interests": ["food & wine", ...],
+            "dietary": [ {"tag","level":"avoids"|"limits","note"} ] (OPTIONAL - see below) } ]
 categories: { "<key>": {"label","emoji","tw":"bg-<color>-100 text-<color>-800 border-<color>-200"} }
    (good starter keys: travel, culture, food, water, adventure, beach, shopping, relax)
 days: [ { "id":"day1","label":"Day 1","location","emoji","arrival","departure"(or null),
           "shipNote"(or null),"note","stay":{"name","url"}(optional),"booking":true/false,
-          "activities":[ ACTIVITY, ... ] } ]        <-- 10 or more per day
+          "activities":[ ACTIVITY, ... ] } ]        <-- ~50 across the WHOLE trip
 ACTIVITY: { "id","name","cat"(a categories key),"dur":"~2 hrs","durM":120(int minutes),
             "cost":"$$","costN":2(int 0-4),"safe":true,"top":true/false,"who":["Name",...],
             "desc","practical","link":"","ll":[lat,lng](optional),"tags":["..."],
-            "start":"HH:MM"(optional, 24-hour) }
+            "start":"HH:MM"(optional, 24-hour),
+            "dietary": {"accommodates":[tag],"unsuitable":[tag],"verified":"YYYY-MM-DD",
+                        "source":"menu"|"site"|"call"|"review"|"unverified","note"}
+                        (OPTIONAL - food places only, and only if you can SOURCE it) }
 mustDos: [ { "location" (matches a day's "location"), "emoji",
              "items": [ MUSTDO, ... ] } ]           <-- one group per stopping location
 MUSTDO:   { "id":"md_...","name","cat"(a categories key),"desc",
@@ -163,10 +203,11 @@ Two stopping locations, trimmed to 2 items each so you can see the shape. Yours 
 === DONE WHEN ===
 All of these are true:
 - The reply is a single valid JSON object that would pass JSON.parse with no edits.
-- Every day has 10 or more activities.
-- Every traveler has 3 or more activities on every day (counted through the "who" arrays).
-- mustDos has one group per stopping location, each with the number of items that place
-  genuinely earns.
+- The whole trip has roughly 50 activities — not per day, and not far over.
+- The "who" tags are spread evenly-ish across the travelers, counted over the whole trip:
+  nobody sits far below the others.
+- mustDos has one group per stopping location, 6-10 items each, and every group's
+  "location" matches one of the days' "location" strings exactly.
 - It passes the app's own checker, which I will run on your output:
       node tools/validate-trip-data.js my-trip.json
   That command prints ✗ for structural errors and ⚠ for a trip that falls under the
@@ -194,8 +235,8 @@ Return ONLY the JSON. No explanation, no ```json fences, nothing before or after
 ## Step 2 — A peek at what good output looks like
 
 Just so you recognize it — here's a tiny **one-day** slice with **one** activity and **one**
-must-do. Your real output will be the full trip: every day with ten or more activities, and
-a `mustDos` group per place you stop in.
+must-do. Your real output will be the full trip: around fifty activities spread over the
+days, and a `mustDos` group per place you stop in.
 
 ```json
 {
@@ -355,15 +396,144 @@ It prints plain-English lines:
   this, word for word:
 
 ```
-⚠ Day 3 ("Seaside") has 7 activities — the guide asks for at least 10, so there is enough for the family to vote on. Ask your AI to add more options for that day.
-⚠ Day 2 ("Old City") leaves Riley with 1 — the guide asks for at least 3 activities for every traveler on every day. An activity counts for everyone listed in its "who", so ask your AI to add options for that day that genuinely suit Riley (not to paste that name onto activities they would not enjoy).
-⚠ This trip has no "Must see & do" list (the "mustDos" block) — that is the trip-wide list of landmarks and experiences everyone can star, separate from the day-by-day plans. Ask your AI to add one group per place you stop in, with as many items as that place genuinely earns (usually 5-15).
+⚠ This trip has 88 activities across 4 days — aim for around 50. Past roughly that many the app stops being a shortlist and becomes a chore to scroll, and the best ideas get buried among the merely fine ones. Ask your AI to CUT the weakest options rather than spread them over more days — keep what someone would actually be disappointed to miss.
+⚠ Riley (6) has far fewer activities tagged for them than the rest of the family, which averages 24 each. An activity counts for everyone listed in its "who", so ask your AI to add options that genuinely suit Riley — not to paste that name onto activities they would not enjoy. Fewer but stronger options for someone who votes on less is fine; this line only fires when someone is far below everyone else.
+⚠ mustDos[0] ("Old City") has 4 items — a group reads best with 6-10. Ask your AI for the rest of what that place genuinely earns.
+⚠ mustDos[1] ("Seaside Town"): no day has that exact "location". The app files must-dos under the day location text, so this group never appears beside the days it belongs to. The day locations are "Arrival", "Old City", "Seaside" and "Departure" — correct the spelling on whichever side is wrong.
+⚠ This trip has no "Must see & do" list (the "mustDos" block) — that is the trip-wide list of landmarks and experiences everyone can star, separate from the day-by-day plans. Ask your AI to add one group per place you stop in, with 6-10 items in each.
 ```
+
+Note what is **not** there: nothing complains about a single light day. Days are allowed to
+be uneven — planners move activities between them in the app.
 
 **Both kinds go straight back to the AI.** Paste the lines into the same chat and say
 *"fix exactly these and return the whole JSON again."* Repeat until it comes back clean.
 That loop is the whole quality-control process — it takes two or three rounds and it is the
 difference between a dashboard the family uses and one they open once.
+
+## Dietary sensitivities (optional)
+
+Two optional keys let the app note where a traveler's food sensitivities and a venue's
+declared options meet. Both are additive: leave them out and the app behaves exactly as it
+always has.
+
+**Read this before you use them.** These are **sensitivities, not allergies**. In the
+family this was built for there is no risk of a reaction — consequences are delayed and
+comfort-level. The app therefore treats the whole feature as *information*, never safety:
+
+- no alert colours, no warning icons, no "safe for Jordan" anywhere;
+- nothing is ever blocked, and nothing is hidden by default;
+- a restriction **annotates** an option. It never removes one.
+
+If anyone in your family has a genuine allergy, **this is not the feature for that.** It is
+not built to carry that weight and must not be pressed into it.
+
+### On a traveler
+
+```json
+"dietary": [
+  { "tag": "gluten", "level": "avoids", "note": "feels better without it" },
+  { "tag": "dairy",  "level": "limits" }
+]
+```
+
+`level` is `"avoids"` (actively avoids it) or `"limits"` (cuts back, not strict). There is
+deliberately no medical tier. `tag` comes from: `gluten`, `dairy`, `eggs`, `peanut`,
+`almond`, `oat`, `soy`, `shellfish`, `vegetarian`, `vegan`, `pescatarian`, `other`.
+
+### On a venue (an activity, or a must-do item)
+
+```json
+"dietary": {
+  "accommodates": ["gluten"],
+  "unsuitable":   ["dairy"],
+  "verified": "2026-08-11",
+  "source": "menu",
+  "note": "the kitchen marks which dishes are which"
+}
+```
+
+`source` is `menu`, `site`, `call`, `review` or `unverified`. Only put it on places that
+serve food; omit the key everywhere else.
+
+**A tag in neither list means UNKNOWN, and the app shows it as "not checked".** That is a
+real answer, not a gap to be filled.
+
+### The one hard rule
+
+> Fill in a venue's `dietary` **only** from a published allergen menu or an explicit
+> statement on the venue's own site. Otherwise **omit the key.**
+
+Guessing is the single worst failure mode here, because a guess is indistinguishable from a
+checked fact once it is written down — and unlike a wrong opening time, nobody finds out it
+was wrong until they are sitting in the restaurant. "Not checked" costs nothing. A wrong
+`accommodates` costs someone their dinner.
+
+The same rule holds in the other direction: **never remove or downgrade a great venue on
+dietary grounds.** Note what is worth knowing in `practical` and let people choose.
+
+### What the family sees
+
+On an activity with a declared `dietary`, a signed-in traveler with matching tags gets one
+small gray line — *"🍽 gluten options here · dairy not checked (from the menu, checked
+2026-08-11)"*. There is also an opt-in **🍽 Works for me** chip next to *For &lt;name&gt;*. Even
+switched on, it hides only what the venue itself declared unsuitable; anything unknown
+stays on screen, because unknown is not a no.
+
+Travelers with no `dietary` array never see any of this.
+
+## Changing a trip the family has already voted on
+
+Everything above describes generating a **whole trip** from scratch. Once people have
+started voting, that is the wrong move — and this is the part that is easy to get wrong.
+
+**Votes are stored per activity id.** The `interests` table maps an activity id to the list
+of people who starred it; nothing else ties a vote to an activity. So:
+
+- **Adding** an activity, or adding a name to an existing activity's `who`, is safe. No
+  existing id changes, so no existing vote moves.
+- **Deleting** an activity, or **renaming its id**, silently orphans every star anyone
+  already gave it. There is no undo and nobody is told.
+
+That gives one rule: **a trip with real votes on it gets an additive patch. Only a trip
+with zero votes may be regenerated wholesale.**
+
+### The additive patch
+
+Ask the AI for this shape instead of a whole trip:
+
+```json
+{
+  "family":        [ { "name": "Riley", "interests": ["…"] } ],
+  "addWho":        { "d2_market": ["Riley", "Casey"], "d3_cliffwalk": ["Riley"] },
+  "newActivities": { "day2": [ ACTIVITY, ACTIVITY ], "day4": [ ACTIVITY ] },
+  "mustDos":       [ { "location": "Old City", "items": [ … ] } ]
+}
+```
+
+- `addWho` maps an **existing** activity id to names to **append** to that activity's
+  `who`. Append only — it never removes a name and never touches the id, which is exactly
+  why it is safe to run against a trip mid-vote.
+- `newActivities` maps a **day id** to brand-new activities, with brand-new ids.
+- `family` and `mustDos` are optional and carry the same shapes as the full schema.
+- Every key is optional; send only the ones that change.
+
+Use it when someone joins the trip, when a traveler turns out to be under-served, or when
+you want more options for one day — the common cases, and none of them justify a rewrite.
+
+### The mustDos-only patch
+
+For "the Must see & do list needs work" and nothing else, the patch is just the bare array:
+
+```json
+[ { "location": "Old City", "emoji": "🏛️", "items": [ … ] } ]
+```
+
+Same rules as above: must-do ids are ids too, so add and edit text freely, but do not
+re-id or delete an item people have already starred.
+
+Whichever shape you use, merge it into your `my-trip.json`, then run the checker on the
+**merged** file — the patch on its own is not a valid trip and will not validate.
 
 ## When it's ready
 Try it locally until you like it, then put it online for the family with the deploy kit in

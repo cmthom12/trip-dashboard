@@ -12,9 +12,11 @@
 # 14 days, and prints exactly one summary line per run (the cron log stays
 # one line per night).
 #
-# Plain `cp` of a live SQLite db is the same tradeoff the single-instance cron
-# made: fine at 03:10 when nobody is writing; the admin console's "Backup Now"
-# (better-sqlite3 online backup) is the transactionally-safe alternative.
+# Uses SQLite's online backup (`sqlite3 .backup`) so a database being written
+# to is snapshotted consistently — this matters most for the WAL-mode family
+# hub, where a plain `cp` misses whatever is still in the -wal file. When the
+# sqlite3 CLI is absent (local rehearsal boxes) it falls back to `cp` and says
+# so once in the log.
 #
 # --dry-run: print what would be copied/pruned, write nothing.
 # TRIPS_ROOT / LEGACY_DIR / DEST_ROOT env overrides exist for local rehearsal.
@@ -22,12 +24,19 @@ set -u
 
 TRIPS_ROOT="${TRIPS_ROOT:-/var/www/trips}"
 LEGACY_DIR="${LEGACY_DIR:-/var/www/trip-dashboard}"
+FAMILY_DIR="${FAMILY_DIR:-/var/www/family-hub}"
 DEST_ROOT="${DEST_ROOT:-/root/db-backups}"
 DRY=0
 [ "${1:-}" = "--dry-run" ] && DRY=1
 
 STAMP="$(date +%Y%m%d-%H%M)"
 copied=0; pruned=0; skipped=0
+HAVE_SQLITE3=0
+if command -v sqlite3 >/dev/null 2>&1; then
+  HAVE_SQLITE3=1
+else
+  echo "backup-all: sqlite3 CLI not found — falling back to cp (a live WAL-mode database may not copy cleanly)" >&2
+fi
 
 do_one() { # do_one <name> <db-path>
   local name="$1" db="$2" dest="$DEST_ROOT/$1"
@@ -43,9 +52,22 @@ do_one() { # do_one <name> <db-path>
     fi
   else
     mkdir -p "$dest"
-    if ! cp "$db" "$dest/data.db.$STAMP"; then
-      echo "backup-all: COPY FAILED for $name ($db)" >&2
-      return
+    # Prefer SQLite's online backup: cp of a live database can capture a torn
+    # page mid-write, and for a WAL-mode database (the family hub runs one) it
+    # silently misses everything still sitting in -wal. `.backup` takes a
+    # consistent snapshot of a database that is actively being written.
+    # Rehearsal environments do not always have the sqlite3 CLI, so fall back
+    # to cp there and say so in the log rather than failing the sweep.
+    if [ "$HAVE_SQLITE3" = 1 ]; then
+      if ! sqlite3 "$db" ".backup '$dest/data.db.$STAMP'"; then
+        echo "backup-all: BACKUP FAILED for $name ($db)" >&2
+        return
+      fi
+    else
+      if ! cp "$db" "$dest/data.db.$STAMP"; then
+        echo "backup-all: COPY FAILED for $name ($db)" >&2
+        return
+      fi
     fi
     copied=$((copied+1))
     local n
@@ -62,6 +84,9 @@ if [ -f "$LEGACY_DIR/data.db" ]; then
   do_one "legacy" "$LEGACY_DIR/data.db"
 fi
 
+if [ -f "$FAMILY_DIR/data.db" ]; then
+  do_one "family-hub" "$FAMILY_DIR/data.db"
+fi
 TAG=""
 [ "$DRY" = 1 ] && TAG=" (dry-run)"
 echo "backup-all[$STAMP]$TAG: $copied copied, $pruned pruned, $skipped dir(s) without data.db"

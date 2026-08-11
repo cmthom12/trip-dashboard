@@ -44,6 +44,12 @@ const SSO_SECRET = String(process.env.FAMILY_SSO_SECRET || '').trim();
 // Empty = host-only cookie (localhost dev). Production sets '.example.com' so
 // every <trip>.<domain> receives it. Never hard-code the real domain here.
 const COOKIE_DOMAIN = String(process.env.COOKIE_DOMAIN || '').trim();
+// Roster claim lock, the portal's counterpart to the trip app's admin toggle.
+// The portal has no admin surface at all — no ADMIN_KEY, no /api/admin/* routes,
+// no admin page — so an env var is the whole mechanism rather than a settings
+// table plus routes plus UI. Unset/'0' = today's behavior: any FAMILY_NAMES name
+// may claim itself. Set to 1 once everyone has claimed theirs.
+const ROSTER_LOCKED = String(process.env.FAMILY_ROSTER_LOCKED || '').trim() === '1';
 const FETCH_TIMEOUT_MS = 2000;
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const DEV_INSTANCES_FILE = path.join(__dirname, 'instances.dev.json');
@@ -184,7 +190,15 @@ db.exec(`CREATE TABLE IF NOT EXISTS users (
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 )`);
 
-const hashPin = pin => crypto.createHash('sha256').update(String(pin)).digest('hex');
+// Same optional pepper as the trip app (see server.js): PIN_PEPPER keys an
+// HMAC so a leaked users table is not a 10,000-entry rainbow table away from
+// every PIN. Unset = the original bare sha256, so deploying this alone is a
+// no-op; set it later and portal users migrate on their next sign-in.
+const PIN_PEPPER = String(process.env.PIN_PEPPER || '');
+const hashPinLegacy = pin => crypto.createHash('sha256').update(String(pin)).digest('hex');
+const hashPin = pin => PIN_PEPPER
+  ? crypto.createHmac('sha256', PIN_PEPPER).update(String(pin)).digest('hex')
+  : hashPinLegacy(pin);
 // Same in-memory 5-strikes / 30-minute lockout the trip app uses, with the same
 // deliberate property: a restart clears it. A portal reboot is rare and an
 // operator unsticking a locked-out kid by restarting is a feature, not a hole.
@@ -210,11 +224,28 @@ app.post('/api/portal/login', (req, res) => {
   const ph = hashPin(pin);
   const row = db.prepare('SELECT pin_hash FROM users WHERE name = ?').get(name);
   let firstTime = false;
+  if (!row && ROSTER_LOCKED) {
+    // Locked roster: an unclaimed name cannot be claimed. Answered exactly like
+    // a wrong PIN — same status, same body, same strike — so the sign-in screen
+    // never reveals which names are still unclaimed.
+    const r = LOGIN_FAILS[name] || { count: 0, until: 0 };
+    r.count += 1;
+    if (r.count >= 5) {
+      r.until = now + LOCK_MS; r.count = 0; LOGIN_FAILS[name] = r;
+      return res.status(429).json({ error: 'Too many attempts', retryMs: LOCK_MS });
+    }
+    LOGIN_FAILS[name] = r;
+    return res.status(401).json({ error: 'Incorrect PIN', attemptsLeft: 5 - r.count });
+  }
   if (!row) {
     // First claim, exactly like the trip app: whoever gets there first sets the
     // PIN. The family shares a household, not a threat model.
     db.prepare('INSERT INTO users (name, pin_hash) VALUES (?, ?)').run(name, ph);
     firstTime = true;
+  } else if (row.pin_hash !== ph && PIN_PEPPER && row.pin_hash === hashPinLegacy(pin)) {
+    // Migrate-on-login: accept the legacy sha256 hash once, rewriting it to the
+    // peppered form in the same request.
+    db.prepare('UPDATE users SET pin_hash = ? WHERE name = ?').run(ph, name);
   } else if (row.pin_hash !== ph) {
     const r = LOGIN_FAILS[name] || { count: 0, until: 0 };
     r.count += 1;

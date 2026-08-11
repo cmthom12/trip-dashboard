@@ -54,7 +54,10 @@ module.exports = {
       NODE_ENV: ENV.NODE_ENV || 'production',
       ADMIN_KEY: ENV.ADMIN_KEY || '',
       CORS_ORIGIN: ENV.CORS_ORIGIN || '',
-      FAMILY_SSO_SECRET: ENV.FAMILY_SSO_SECRET || ''
+      FAMILY_SSO_SECRET: ENV.FAMILY_SSO_SECRET || '',
+      // Empty = PINs stay on the legacy bare-sha256 scheme (no behavior change).
+      // Set it and users migrate to peppered hashes as they next sign in.
+      PIN_PEPPER: ENV.PIN_PEPPER || ''
     },
     instances: 1,
     exec_mode: 'fork',

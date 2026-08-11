@@ -75,7 +75,9 @@ const CAPTURE = ['TRIP', 'DAYS', 'FAMILY', 'CAT', 'PLANNERS',
   'MUSTDO_GROUPS', 'MUSTDO_ITEMS', 'MUSTDO_BY_ID', 'HAS_MUSTDOS',
   'App', 'Countdown', 'DayPlanCard', 'DayStrip', 'FlightCard', 'IntChips', 'Login',
   'MissionCard', 'MustDoSection', 'PhraseCard', 'PrintItinerary', 'ReviewTab',
-  'StarRow', 'TripMap', 'WeatherChip'];
+  'StarRow', 'TripMap', 'WeatherChip',
+  'DietaryNote', 'dietaryFor', 'myDietary',
+  'safeHttpUrl', 'extLink', 'flushOutbox', 'OUTBOX_KEY'];
 
 function block(tag, id) {
   const open = '<script type="' + tag + '" id="' + id + '">';
@@ -138,8 +140,11 @@ window.window = window;
 // ── minimal Leaflet: records every marker built (with the icon html that carries
 // the pin colour) and every marker the day filter hides, so map behaviour is
 // observable from Node.
-const LOG = { markers: [], hidden: [], polylines: 0 };
-const layerish = () => ({ addTo() { return this; }, bindPopup() { return this; }, on() { return this; }, setIcon(i) { this.icon = i; return this; }, setPopupContent() { return this; }, getLatLng: () => ({ distanceTo: () => 0 }), remove() {}, clearLayers() {}, openPopup() {} });
+const LOG = { markers: [], hidden: [], polylines: 0, popups: [] };
+// bindPopup/setPopupContent record their HTML: popup markup is built by a
+// closure inside TripMap's effect and is unreachable from `X`, so the only way
+// to assert on it is to capture what the map was handed.
+const layerish = () => ({ addTo() { return this; }, bindPopup(h) { this.popup = h; if (typeof h === 'string') LOG.popups.push(h); return this; }, on() { return this; }, setIcon(i) { this.icon = i; return this; }, setPopupContent(h) { this.popup = h; if (typeof h === 'string') LOG.popups.push(h); return this; }, getLatLng: () => ({ distanceTo: () => 0 }), remove() {}, clearLayers() {}, openPopup() {} });
 window.L = {
   map: () => Object.assign(layerish(), {
     setView() {}, fitBounds() {}, flyTo() {}, once() {}, invalidateSize() {},
@@ -195,6 +200,17 @@ function props(node, key, out) {
 
 module.exports = { sandbox, X: sandbox.__X, React, LOG, text, nodes, walk, props, ROOT };
 
+// ── child mode: render the map for the given trip and emit the popup HTML ────
+// The app script is evaluated once per process against one trip, so the escaping
+// check below runs its poisoned trip in a child and reads the popups back here.
+if (require.main === module && process.env.TRIP_EMIT_POPUPS === '1') {
+  React.__runEffects = true;
+  if (sandbox.__X.TripMap) sandbox.__X.TripMap({ focus: null, interests: {}, user: (sandbox.__X.FAMILY || [])[0], schedule: [] });
+  React.__runEffects = false;
+  process.stdout.write(JSON.stringify(LOG.popups));
+  process.exit(0);
+}
+
 if (require.main === module) {
   const X = sandbox.__X;
   console.log('root      ' + ROOT);
@@ -207,5 +223,99 @@ if (require.main === module) {
   React.__runEffects = false;
   console.log('map pins  ' + LOG.markers.length + ' marker(s), ' + LOG.polylines + ' route line(s)');
   console.log(React.__effectErrors.length ? 'effect errors: ' + React.__effectErrors.join(' | ') : 'no effect errors');
-  process.exit(0); // the app installs timers the harness never clears
+
+  // ── checks ────────────────────────────────────────────────────────────────
+  // Regression guards for the write-integrity round: popup escaping (H4),
+  // href scheme filtering (M5) and outbox survival on session loss (H5). Each
+  // one failed against the code as it stood before those fixes.
+  let pass = 0, fail = 0;
+  const ck = (label, ok) => { ok ? pass++ : fail++; console.log((ok ? 'PASS  ' : 'FAIL  ') + label); };
+  console.log('');
+
+  // H4 — trip-data text must not reach popup HTML unescaped. Rendered in a
+  // child process because one process renders one trip.
+  const os = require('os'), cp = require('child_process');
+  const poisoned = JSON.parse(JSON.stringify(X.TRIP));
+  const PAYLOAD = '<b>PWNED</b>';
+  const ESCAPED = 'bPWNED/b';          // what the strip-based esc leaves behind
+  let injected = false;
+  for (const d of (poisoned.days || [])) {
+    d.label = PAYLOAD + ' label';
+    d.location = PAYLOAD + ' location';
+    for (const a of (d.activities || [])) {
+      if (!Array.isArray(a.ll)) continue;
+      a.name = PAYLOAD + ' name';
+      a.desc = PAYLOAD + ' desc';      // desc is what feeds the popup's note
+      injected = true;
+    }
+  }
+  ck('poisoned trip built (an activity with coordinates carries the payload)', injected);
+
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'render-harness-'));
+  let popups = [];
+  try {
+    const tripFile = path.join(tmp, 'poisoned.json');
+    fs.writeFileSync(tripFile, JSON.stringify(poisoned));
+    const r = cp.spawnSync(process.execPath, [__filename, tripFile, ROOT], {
+      env: Object.assign({}, process.env, { TRIP_EMIT_POPUPS: '1' }),
+      encoding: 'utf8'
+    });
+    popups = r.status === 0 && r.stdout ? JSON.parse(r.stdout) : [];
+  } catch (e) { popups = []; } finally { try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (e) {} }
+
+  const joined = popups.join('\n');
+  ck('map popups were rendered for the poisoned trip', popups.length > 0);
+  // Both halves matter: the value must actually reach the popup (so the check
+  // cannot pass by rendering nothing) AND must arrive stripped.
+  ck('popup carries the trip-data text', joined.includes(ESCAPED));
+  ck("popup contains no unescaped '<' originating from desc/name/label", !joined.includes(PAYLOAD) && !joined.includes('<b>PWNED'));
+
+  // M5 — only http/https/mailto may become a live link.
+  const su = X.safeHttpUrl;
+  ck('safeHttpUrl exists', typeof su === 'function');
+  if (typeof su === 'function') {
+    ck('safeHttpUrl passes https', su('https://example.com') === 'https://example.com');
+    ck('safeHttpUrl passes mailto', su('mailto:a@b.c') === 'mailto:a@b.c');
+    ck('safeHttpUrl rejects javascript:', su('javascript:alert(1)') === null);
+    ck('safeHttpUrl rejects data:', su('data:text/html,<b>') === null);
+    ck('safeHttpUrl rejects a tab-smuggled scheme ("jav\\tascript:")', su('jav\tascript:alert(1)') === null);
+    ck('safeHttpUrl rejects a newline-smuggled scheme', su('jav\nascript:alert(1)') === null);
+  }
+  const xl = X.extLink;
+  ck('extLink exists', typeof xl === 'function');
+  if (typeof xl === 'function') {
+    const good = xl('https://example.com', { style: {} }, 'Book');
+    ck('extLink renders a safe URL as an anchor', good.type === 'a' && good.props.href === 'https://example.com');
+    const bad = xl('javascript:alert(1)', { style: {} }, 'Book');
+    ck('a javascript: link renders as text, not an anchor', bad.type === 'span' && bad.props.href === undefined);
+    ck('…and it keeps its label', text(bad).includes('Book'));
+    const tabbed = xl('jav\tascript:alert(1)', { style: {} }, 'Book');
+    ck('"jav\\tascript:" also renders as text, not an anchor', tabbed.type === 'span' && tabbed.props.href === undefined);
+  }
+
+  // H5 — a flush that hits a dead session must put the queue back untouched.
+  const runOutbox = () => {
+    if (typeof X.flushOutbox !== 'function') { ck('flushOutbox exists', false); return Promise.resolve(); }
+    const KEY = X.OUTBOX_KEY || 'tg_outbox';
+    sandbox.localStorage.removeItem('tg_token');   // the session is gone
+    const queued = [
+      { u: '/api/notes', o: { method: 'POST', body: '{"message":"a"}' } },
+      { u: '/api/interests', o: { method: 'POST', body: '{"activityId":"x"}' } },
+      { u: '/api/packing', o: { method: 'POST', body: '{"item":"y"}' } }
+    ];
+    sandbox.localStorage.setItem(KEY, JSON.stringify(queued));
+    const before = sandbox.localStorage.getItem(KEY);
+    sandbox.fetch = () => Promise.resolve({ status: 401, ok: false, json: () => Promise.resolve({}) });
+    return X.flushOutbox().then(sent => {
+      const after = sandbox.localStorage.getItem(KEY);
+      ck('outbox flush with a dead token leaves the queue intact', after === before);
+      ck('…all three queued writes survive, none reported sent', JSON.parse(after).length === 3 && sent === 0);
+    }, () => ck('outbox flush with a dead token leaves the queue intact', false));
+  };
+
+  runOutbox().then(() => {
+    console.log('');
+    console.log('RESULT: ' + pass + ' PASS, ' + fail + ' FAIL');
+    process.exit(fail ? 1 : 0); // the app installs timers the harness never clears
+  });
 }

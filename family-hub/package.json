@@ -1,6 +1,6 @@
 {
   "name": "trip-family-hub",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "private": true,
   "description": "Family-facing launcher portal listing every trip-dashboard instance on one droplet, with one shared sign-in (family SSO)",
   "main": "server.js",

@@ -105,7 +105,7 @@ P_FP="$(fp_of "$(get_key "$PORTAL_ENV")")"
 [ "$P_FP" = "$SRC_FP" ] || BAD=$((BAD+1))
 P_RELOAD="skipped (no pm2)"
 if [ "$HAVE_PM2" = 1 ]; then
-  if pm2 reload family-hub >/dev/null 2>&1; then P_RELOAD="ok"; else P_RELOAD="FAILED"; BAD=$((BAD+1)); fi
+  if (cd "$FAMILY_DIR" && pm2 reload ecosystem.config.js) >/dev/null 2>&1; then P_RELOAD="ok"; else P_RELOAD="FAILED"; BAD=$((BAD+1)); fi
 fi
 P_PORT="$(tr -d '\r' < "$PORTAL_ENV" | sed -n 's/^PORT=//p' | head -1)"
 P_PROBE="no port"
@@ -129,7 +129,7 @@ for name in "${INSTANCES[@]}"; do
 
   RELOAD="skipped (no pm2)"
   if [ "$HAVE_PM2" = 1 ]; then
-    if pm2 reload "trip-${name#trip-}" >/dev/null 2>&1; then RELOAD="ok"; else RELOAD="FAILED"; BAD=$((BAD+1)); fi
+    if (cd "$TRIPS_ROOT/$name" && pm2 reload ecosystem.config.js) >/dev/null 2>&1; then RELOAD="ok"; else RELOAD="FAILED"; BAD=$((BAD+1)); fi
   fi
 
   PORT="$(tr -d '\r' < "$env" | sed -n 's/^PORT=//p' | head -1)"

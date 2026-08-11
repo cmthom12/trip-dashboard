@@ -131,6 +131,17 @@ body{background:#F0F2F5;overscroll-behavior:none}
     "adventure",
     "food & wine",
     "photography"
+   ],
+   "dietary": [
+    {
+     "tag": "gluten",
+     "level": "avoids",
+     "note": "Sample entry for a fictional traveler — feels better without it. Not an allergy."
+    },
+    {
+     "tag": "dairy",
+     "level": "limits"
+    }
    ]
   },
   {
@@ -275,6 +286,17 @@ body{background:#F0F2F5;overscroll-behavior:none}
      ],
      "desc": "First-night group dinner near the hotel. Sample activity.",
      "practical": "Sample note: swap this for your own logistics — meeting point, what to bring, booking link.",
+     "dietary": {
+      "accommodates": [
+       "gluten"
+      ],
+      "unsuitable": [
+       "vegan"
+      ],
+      "verified": "2026-08-11",
+      "source": "menu",
+      "note": "Sample entry: the kitchen marks which dishes are which."
+     },
      "link": "",
      "ll": [
       40.7128,
@@ -1438,6 +1460,17 @@ body{background:#F0F2F5;overscroll-behavior:none}
       41.9009,
       12.4833
      ]
+    },
+    {
+     "id": "md_artisans",
+     "name": "The Artisan Lane",
+     "cat": "shopping",
+     "desc": "Sample must-do: the one street where things are still made by hand — workshops open to the street, and the only souvenirs worth carrying home.",
+     "ll": [
+      41.8934,
+      12.4767
+     ],
+     "note": "Sample note: most workshops shut for a long lunch."
     }
    ]
   },
@@ -1498,6 +1531,17 @@ body{background:#F0F2F5;overscroll-behavior:none}
       25.36
      ],
      "note": "Sample note: boats only run in calm weather — ask the harbour that morning."
+    },
+    {
+     "id": "md_saltpans",
+     "name": "The Salt Pans at Dusk",
+     "cat": "relax",
+     "desc": "Sample must-do: flat pink water that mirrors the whole sky for twenty minutes, and the birds that feed there. Nothing to book, nothing to pay.",
+     "ll": [
+      37.4021,
+      25.3412
+     ],
+     "note": "Sample note: take the repellent — still water, still air, mosquitoes."
     }
    ]
   }
@@ -1774,6 +1818,10 @@ async function flushOutbox() {
           tok = localStorage.getItem('tg_token');
         } catch (_e) {}
         if (!tok) {
+          // Session is gone entirely: nothing left in the queue can succeed
+          // right now, but these are still unsent user writes. Re-queue this
+          // item and everything after it so a later login can replay them.
+          keep.push(...q.slice(i));
           break;
         }
         continue;
@@ -1976,6 +2024,36 @@ const MUSTDO_ITEMS = MUSTDO_GROUPS.reduce((out, g) => out.concat(
 const MUSTDO_BY_ID = {};
 MUSTDO_ITEMS.forEach(it => { MUSTDO_BY_ID[it.id] = it; });
 const HAS_MUSTDOS = MUSTDO_ITEMS.length > 0;
+// Every href in this app comes from authorable content — the trip-data block or
+// a suggestion someone typed into the app — so no URL reaches an anchor without
+// passing here. Only http/https/mailto are allowed; anything else returns null.
+// Browsers ignore control characters inside a scheme, so "jav\tascript:" is a
+// working javascript: URL — so the probe strips U+0000..U+0020 everywhere
+// before the scheme test, not just at the ends. Do not lean on React's own
+// URL sanitizer here: the vendored production build's behavior is not a contract
+// we control.
+function safeHttpUrl(u) {
+  if (typeof u !== 'string') return null;
+  const probe = u.replace(/[\u0000-\u0020]+/g, '');
+  if (!/^(?:https?|mailto):/i.test(probe)) return null;
+  return u.replace(/^[\u0000-\u0020]+/, '');
+}
+// Anchor for an authorable URL. A rejected URL degrades to a same-styled inert
+// span so the label still reads — losing the link is visible, losing the text
+// would look like a rendering bug.
+function extLink(url, props) {
+  const kids = Array.prototype.slice.call(arguments, 2);
+  const safe = safeHttpUrl(url);
+  const p = Object.assign({}, props);
+  if (safe) {
+    p.href = safe;
+    return React.createElement.apply(null, ["a", p].concat(kids));
+  }
+  delete p.href;
+  delete p.target;
+  delete p.rel;
+  return React.createElement.apply(null, ["span", p].concat(kids));
+}
 function linkify(text) {
   return text.split(/(\s+)/).map((tok, i) => {
     if (/^https?:\/\//i.test(tok) || /^www\./i.test(tok)) {
@@ -3032,6 +3110,10 @@ function TripMap({
       attribution: '&copy; OpenStreetMap contributors'
     }).addTo(map);
     const gm = q => 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(q);
+    // Leaflet popups/icons take raw HTML strings, so every value that comes from
+    // trip-data has to be stripped before it lands in one. Same strip-don't-encode
+    // rule the live-location markers use, hoisted here so dot() and pop() share it.
+    const esc = v => String(v == null ? '' : v).replace(/[<>&"]/g, '');
     // o = {size, ring, muted, badge} — the interest overlay re-icons activity pins:
     // bigger + ring for the viewer's 3★, grey/faded when they haven't voted.
     // badge overlays a small calendar glyph = the activity is on the day plan.
@@ -3042,7 +3124,6 @@ function TripMap({
       const pin = '<div style="background:' + color + ';color:#fff;width:' + s + 'px;height:' + s + 'px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);display:flex;align-items:center;justify-content:center;box-shadow:0 1px 5px rgba(0,0,0,.45)' + (o.ring ? ',0 0 0 4px rgba(194,65,12,.33)' : '') + ';border:2px solid #fff' + (o.muted ? ';opacity:.55' : '') + '"><span style="transform:rotate(45deg);font-size:' + fs + 'px;font-weight:700;line-height:1">' + n + '</span></div>';
       // The badge lives on an unrotated wrapper so it stays upright at the pin's
       // top-right corner regardless of the teardrop's own -45° transform.
-      const esc = v => String(v == null ? '' : v).replace(/[<>&"]/g, '');
       const badge = o.badge ? '<span title="' + esc(o.badgeTitle || 'On the day plan') + '" style="position:absolute;top:-6px;right:-7px;width:15px;height:15px;border-radius:50%;background:#fff;border:1.5px solid #0D2B4E;display:flex;align-items:center;justify-content:center;font-size:9px;line-height:1;box-shadow:0 1px 3px rgba(0,0,0,.35)">📅</span>' : '';
       return L.divIcon({
         className: 'tm-pin',
@@ -3052,7 +3133,9 @@ function TripMap({
         popupAnchor: [0, -(s - 2)]
       });
     };
-    const pop = (title, sub, note, q) => '<div style="min-width:158px;font-family:DM Sans,sans-serif"><div style="font-weight:700;font-size:13px;color:#0D2B4E">' + title + '</div><div style="font-size:11px;color:#6B7280;margin:1px 0 5px">' + sub + '</div><div style="font-size:12px;color:#374151;line-height:1.35;margin-bottom:8px">' + note + '</div><a href="' + gm(q) + '" target="_blank" rel="noopener" style="display:inline-block;font-size:11px;font-weight:700;color:#fff;background:#1A73E8;padding:5px 10px;border-radius:8px;text-decoration:none">Open in Google Maps &#8599;</a></div>';
+    // title/sub/note are trip-data text; gm(q) is a fixed https prefix with the
+    // query fully encodeURIComponent'd, so the href needs no extra escaping.
+    const pop = (title, sub, note, q) => '<div style="min-width:158px;font-family:DM Sans,sans-serif"><div style="font-weight:700;font-size:13px;color:#0D2B4E">' + esc(title) + '</div><div style="font-size:11px;color:#6B7280;margin:1px 0 5px">' + esc(sub) + '</div><div style="font-size:12px;color:#374151;line-height:1.35;margin-bottom:8px">' + esc(note) + '</div><a href="' + gm(q) + '" target="_blank" rel="noopener" style="display:inline-block;font-size:11px;font-weight:700;color:#fff;background:#1A73E8;padding:5px 10px;border-radius:8px;text-decoration:none">Open in Google Maps &#8599;</a></div>';
     const DAY_C = '#1B6CA8',
       ACT_C = '#C2410C',
       MD_C = '#7C3AED'; // must-dos get their own accent — they are trip-wide, not a day's activity
@@ -5230,8 +5313,7 @@ function MustDoSection({
         cursor: "pointer",
         whiteSpace: "nowrap"
       }
-    }, "📋 Day Plan"), it.link && React.createElement("a", {
-      href: it.link,
+    }, "📋 Day Plan"), it.link && extLink(it.link, {
       target: "_blank",
       rel: "noopener noreferrer",
       style: {
@@ -6079,6 +6161,80 @@ function ReviewTab({
     }
   }, "\u2795 Add something we did"))));
 }
+// ── DIETARY (informational only — read this before touching it) ──────────────
+// These are IgG-style food SENSITIVITIES, not IgE allergies. There is no
+// anaphylaxis risk here; consequences are delayed and comfort-level. So none of
+// this is a safety system, and it must never look like one:
+//   - no alert colours, no warning icons, no "safe for <name>" language;
+//   - it never blocks anything and never hides anything by default;
+//   - a restriction ANNOTATES an option. It never removes one.
+// The "Works for me" chip is opt-in and, even on, only hides what the VENUE
+// itself declared unsuitable — never an unknown.
+//
+// A venue's dietary block has two lists. A tag in NEITHER means UNKNOWN, and
+// unknown renders as unknown: turning silence into either answer is the one
+// failure this feature cannot have. A venue with no dietary block at all says
+// nothing, which is the normal case and is not a defect.
+const DIET_LABEL = {
+  gluten: "gluten", dairy: "dairy", eggs: "eggs", peanut: "peanuts", almond: "almonds",
+  oat: "oats", soy: "soy", shellfish: "shellfish", vegetarian: "vegetarian",
+  vegan: "vegan", pescatarian: "pescatarian", other: "that"
+};
+const DIET_SOURCE_WORD = {
+  menu: "from the menu", site: "from their site", call: "from a call",
+  review: "from reviews", unverified: "unverified"
+};
+const myDietary = who => {
+  const f = (TRIP.family || []).find(x => x && x.name === who);
+  return (f && Array.isArray(f.dietary) ? f.dietary : []).filter(e => e && e.tag);
+};
+// One person against one activity. Returns null when there is nothing to say —
+// no tags of their own, or no declaration from the venue.
+const dietaryFor = (a, who) => {
+  const mine = myDietary(who);
+  if (!mine.length) return null;
+  const v = a && a.dietary;
+  if (!v || typeof v !== "object") return null;
+  const acc = Array.isArray(v.accommodates) ? v.accommodates : [];
+  const uns = Array.isArray(v.unsuitable) ? v.unsuitable : [];
+  const out = {
+    accommodates: [], unsuitable: [], unknown: [],
+    source: v.source || "", verified: v.verified || "", note: v.note || ""
+  };
+  mine.forEach(e => {
+    if (uns.indexOf(e.tag) >= 0) out.unsuitable.push(e.tag);
+    else if (acc.indexOf(e.tag) >= 0) out.accommodates.push(e.tag);
+    else out.unknown.push(e.tag);
+  });
+  return out.accommodates.length || out.unsuitable.length || out.unknown.length ? out : null;
+};
+// Deliberately plain: the same gray as the other neutral chips on the card, and
+// a fork rather than any kind of alert glyph.
+function DietaryNote({
+  act,
+  who
+}) {
+  const d = dietaryFor(act, who);
+  if (!d) return null;
+  const nm = t => DIET_LABEL[t] || t;
+  const bits = [];
+  if (d.accommodates.length) bits.push(d.accommodates.map(nm).join(" and ") + " options here");
+  if (d.unsuitable.length) bits.push("not much without " + d.unsuitable.map(nm).join(" or "));
+  if (d.unknown.length) bits.push(d.unknown.map(nm).join(" and ") + " not checked");
+  const prov = [d.source && DIET_SOURCE_WORD[d.source], d.verified && "checked " + d.verified].filter(Boolean).join(", ");
+  return React.createElement("div", {
+    style: {
+      marginTop: 8,
+      fontSize: 11.5,
+      lineHeight: 1.5,
+      color: "#4B5563",
+      background: "#F3F4F6",
+      border: "1px solid #E5E7EB",
+      borderRadius: 8,
+      padding: "5px 9px"
+    }
+  }, "🍽 ", bits.join(" · "), prov ? " (" + prov + ")" : "", d.note ? " — " + d.note : "");
+}
 function App() {
   const printPortalRef = React.useRef(null);
   if (!printPortalRef.current && typeof document !== "undefined") {
@@ -6138,6 +6294,9 @@ function App() {
   const [notes, setNotes] = useState([]);
   const [noteText, setNoteText] = useState("");
   const [onlyMine, setOnlyMine] = useState(false);
+  // Off by default, always. Dietary info annotates; it only ever filters when
+  // the traveler asks it to, and even then only on what the venue declared.
+  const [dietOnly, setDietOnly] = useState(false);
   const [suggestions, setSuggestions] = useState([]);
   const [sugLabel, setSugLabel] = useState("");
   const [sugUrl, setSugUrl] = useState("");
@@ -6690,6 +6849,12 @@ function App() {
   }))).filter(f => !f.cruise || IS_CRUISE);
   const acts = (currentDay?.activities || []).filter(a => {
     if (onlyMine && !(a.who || []).includes(user)) return false;
+    if (dietOnly) {
+      const dd = dietaryFor(a, user);
+      // Only an explicit "unsuitable" from the venue hides anything. Unknown
+      // stays visible — it is not a no, and treating it as one would be a lie.
+      if (dd && dd.unsuitable.length) return false;
+    }
     if (filter !== "all" && a.cat !== filter) return false;
     if (search) {
       const q = search.toLowerCase();
@@ -7140,8 +7305,7 @@ function App() {
     style: {
       flexShrink: 0
     }
-  }, "\uD83D\uDCCC"), React.createElement("span", null, currentDay.note)), currentDay.stay && React.createElement("a", {
-    href: currentDay.stay.url,
+  }, "\uD83D\uDCCC"), React.createElement("span", null, currentDay.note)), currentDay.stay && extLink(currentDay.stay.url, {
     target: "_blank",
     rel: "noopener",
     style: {
@@ -7335,7 +7499,25 @@ function App() {
       color: onlyMine ? "#0D2B4E" : "#4B5563",
       boxShadow: onlyMine ? "0 2px 8px rgba(201,162,39,.4)" : "0 1px 3px rgba(0,0,0,.08)"
     }
-  }, "\u2B50 For ", user), FILTERS.map(f => React.createElement("button", {
+  }, "\u2B50 For ", user), myDietary(user).length > 0 && React.createElement("button", {
+    onClick: () => setDietOnly(!dietOnly),
+    title: "Hides only places that told us they cannot do without something you avoid. Anything unknown stays.",
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 4,
+      padding: "6px 12px",
+      borderRadius: 20,
+      border: "none",
+      cursor: "pointer",
+      whiteSpace: "nowrap",
+      fontSize: 12,
+      fontWeight: 600,
+      background: dietOnly ? "#4B5563" : "#fff",
+      color: dietOnly ? "#fff" : "#4B5563",
+      boxShadow: dietOnly ? "0 2px 8px rgba(75,85,99,.3)" : "0 1px 3px rgba(0,0,0,.08)"
+    }
+  }, "\uD83C\uDF7D Works for me"), FILTERS.map(f => React.createElement("button", {
     key: f.id,
     onClick: () => setFilter(f.id),
     style: {
@@ -7602,8 +7784,7 @@ function App() {
         marginBottom: 10,
         fontSize: 11.5
       }
-    }, a.loc && React.createElement("a", {
-      href: a.gmap,
+    }, a.loc && extLink(a.gmap, {
       target: "_blank",
       rel: "noopener noreferrer",
       style: {
@@ -7638,7 +7819,10 @@ function App() {
           overflow: "hidden"
         } : {})
       }
-    }, a.desc), open && React.createElement("div", {
+    }, a.desc), React.createElement(DietaryNote, {
+      act: a,
+      who: user
+    }), open && React.createElement("div", {
       style: {
         marginTop: 10,
         background: "#EFF6FF",
@@ -7801,8 +7985,7 @@ function App() {
         cursor: "pointer",
         whiteSpace: "nowrap"
       }
-    }, "\uD83D\uDCCB Day Plan")), a.link && React.createElement("a", {
-      href: a.link,
+    }, "\uD83D\uDCCB Day Plan")), a.link && extLink(a.link, {
       target: "_blank",
       rel: "noopener noreferrer",
       style: {
@@ -7930,8 +8113,7 @@ function App() {
         color: "#1F2937",
         marginBottom: 2
       }
-    }, s.label), React.createElement("a", {
-      href: /^https?:\/\//i.test(s.url) ? s.url : 'https://' + s.url,
+    }, s.label), extLink(/^https?:\/\//i.test(s.url) ? s.url : 'https://' + s.url, {
       target: "_blank",
       rel: "noopener noreferrer",
       style: {
@@ -9189,8 +9371,7 @@ function App() {
       padding: "6px 10px",
       textDecoration: "none"
     }
-  }, "\uD83D\uDDFA Map"), React.createElement("a", {
-    href: em.site,
+  }, "\uD83D\uDDFA Map"), extLink(em.site, {
     target: "_blank",
     rel: "noopener",
     style: {
@@ -9215,8 +9396,7 @@ function App() {
       margin: "0 auto",
       padding: "12px 12px 100px"
     }
-  }, React.createElement("a", {
-    href: PHOTOS_URL,
+  }, extLink(PHOTOS_URL, {
     target: "_blank",
     rel: "noopener",
     style: {
@@ -10095,8 +10275,7 @@ function FlightCard({
       color: "#374151",
       fontWeight: 600
     }
-  }, f.terminal))), React.createElement("a", {
-    href: f.trackUrl,
+  }, f.terminal))), extLink(f.trackUrl, {
     target: "_blank",
     rel: "noopener noreferrer",
     style: {

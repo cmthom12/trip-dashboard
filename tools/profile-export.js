@@ -263,6 +263,19 @@ family.forEach(f => {
   say('DECLARED (family JSON):');
   say(declared);
   say('');
+  // Dietary is COPIED, verbatim, from family[].dietary — never inferred, never
+  // derived from voting behavior (somebody skipping the pasta bar is not
+  // evidence of anything). This is the piece that makes a restriction survive
+  // into every future trip build instead of being rediscovered each time.
+  // Absent key = no section at all, so pre-dietary trips print byte-identically.
+  const diet = Array.isArray(f.dietary) ? f.dietary.filter(e => e && e.tag) : [];
+  if (diet.length) {
+    say('DIETARY (copied from the trip data — carry this into the next trip verbatim):');
+    diet.forEach(e => say('- ' + e.tag + ' — ' + (e.level || 'level not stated') +
+      (e.note ? ' (' + e.note + ')' : '')));
+    say('These are food sensitivities, not allergies: they annotate options, never rule them out.');
+    say('');
+  }
   say('VOTED — ' + mine.length + ' votes; ' + must.length + ' must-do (3-star), ' +
       strong.length + ' strong (2-star)');
   say('Category weights: ' +

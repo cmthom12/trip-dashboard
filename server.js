@@ -100,6 +100,40 @@ const adminGate = (req, res, next) => {
 };
 app.use('/api/admin', adminGate);
 
+// ── APP SETTINGS: key/value store for operator-flipped runtime switches. Created
+// with the same inline CREATE TABLE IF NOT EXISTS pattern as the rest of the
+// schema, so an existing data.db picks it up on the next boot with no migration
+// step. ──
+db.exec(`CREATE TABLE IF NOT EXISTS app_settings (
+  key TEXT PRIMARY KEY, value TEXT, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+)`);
+const getSetting = (k, dflt) => {
+  try {
+    const r = db.prepare('SELECT value FROM app_settings WHERE key = ?').get(k);
+    return r ? r.value : dflt;
+  } catch (e) { return dflt; }
+};
+const setSetting = (k, v) => db.prepare(
+  `INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
+   ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP`
+).run(k, String(v));
+
+// Roster claim lock. UNLOCKED is the default and is exactly the historical
+// behavior: any allowed name may claim itself by picking a PIN on first login.
+// An operator turns it on once the family has claimed their names, after which
+// an unclaimed name can no longer be taken by whoever finds the URL.
+const rosterLocked = () => getSetting('roster_locked', '0') === '1';
+
+app.get('/api/admin/roster-lock', (req, res) => {
+  res.json({ locked: rosterLocked() });
+});
+app.post('/api/admin/roster-lock', (req, res) => {
+  const { locked } = req.body || {};
+  if (typeof locked !== 'boolean') return res.status(400).json({ error: 'locked must be true or false' });
+  setSetting('roster_locked', locked ? '1' : '0');
+  res.json({ ok: true, locked });
+});
+
 // ── TRIP CONFIG: the active trip lives in the db; POST /api/trip (admin) imports a new one.
 // Import + versioning are shared with tools/apply-trip-data.js via tools/lib/trip-store.js. ──
 const { ensureTripConfigTable, importTripConfig } = require('./tools/lib/trip-store.js');
@@ -169,8 +203,13 @@ app.post('/api/trip/validate', adminGate, (req, res) => {
 app.post('/api/trip', adminGate, (req, res) => {
   const d = req.body;
   if (!d || typeof d !== 'object' || Array.isArray(d)) return res.status(400).json({ ok: false, errors: ['Body must be the trip-data JSON object'], warnings: [] });
-  const r = importTripConfig(db, d, 'admin');
-  if (!r.ok) return res.status(400).json({ ok: false, errors: r.errors, warnings: r.warnings });
+  // `force` rides on the request, not on the trip. Strip it before validation
+  // so an override can never end up stored inside the trip_config JSON.
+  const force = d.force === true || req.query.force === '1';
+  if ('force' in d) delete d.force;
+  const r = importTripConfig(db, d, 'admin', { force });
+  if (!r.ok) return res.status(400).json({ ok: false, errors: r.errors, warnings: r.warnings,
+    orphans: r.orphans || [], error: r.errors[0] });
   _tripCache = d; // refresh the cache: name lists and GET /api/trip switch immediately
   res.json({ ok: true, version: r.version, warnings: r.warnings });
 });
@@ -284,9 +323,37 @@ app.use((req, res, next) => {
   req.authUser = row.name;
   next();
 });
-const hashPin = pin => crypto.createHash('sha256').update(String(pin)).digest('hex');
+// PIN hashing. A 4-digit PIN has only 10,000 possible sha256 digests, so a
+// leaked users table is reversible by anyone with a wordlist. PIN_PEPPER (which
+// lives in the environment, never in the database) turns the digest into an
+// HMAC keyed by a value the database does not contain.
+//
+// Optional and migrating BY DESIGN: with no PIN_PEPPER set this is byte-for-byte
+// the old bare sha256, so deploying the code alone changes nothing. Set the
+// pepper later and the family migrates silently as each person next signs in
+// (see the legacy fallback in /api/login) — no reset, no downtime.
+const PIN_PEPPER = String(process.env.PIN_PEPPER || '');
+const hashPinLegacy = pin => crypto.createHash('sha256').update(String(pin)).digest('hex');
+const hashPin = pin => PIN_PEPPER
+  ? crypto.createHmac('sha256', PIN_PEPPER).update(String(pin)).digest('hex')
+  : hashPinLegacy(pin);
 const ALLOWED = ["Alex","Sam","Jordan","Riley","Casey"]; // fallback only — see allowedNames()
 const LOGIN_FAILS = {}; // name -> { count, until } : in-memory brute-force lockout
+
+// The wrong-PIN answer, including its strike against the lockout counter. Shared
+// so that a rejected claim on a locked roster is indistinguishable from a wrong
+// PIN — same status, same body, same counter — and the sign-in screen never
+// reveals which names are still unclaimed.
+const _pinReject = (name, now, res) => {
+  const r = LOGIN_FAILS[name] || { count: 0, until: 0 };
+  r.count += 1;
+  if (r.count >= 5) {
+    r.until = now + 30 * 60 * 1000; r.count = 0; LOGIN_FAILS[name] = r;
+    return res.status(429).json({ error: 'Too many attempts', retryMs: 30 * 60 * 1000 });
+  }
+  LOGIN_FAILS[name] = r;
+  return res.status(401).json({ error: 'Incorrect PIN', attemptsLeft: 5 - r.count });
+};
 
 app.post('/api/login', (req, res) => {
   const { name, pin } = req.body;
@@ -298,18 +365,24 @@ app.post('/api/login', (req, res) => {
   const ph = hashPin(pin);
   const existing = db.prepare('SELECT * FROM users WHERE name = ?').get(name);
   if (!existing) {
+    // Locked roster: an unclaimed name cannot be claimed. Answered exactly like
+    // a wrong PIN so the lock leaks nothing about who has signed up.
+    if (rosterLocked()) return _pinReject(name, _now, res);
     const token = crypto.randomBytes(16).toString('hex');
     db.prepare('INSERT INTO users (name, pin_hash, token) VALUES (?, ?, ?)').run(name, ph, token);
     db.prepare('INSERT OR IGNORE INTO user_tokens (token, name) VALUES (?, ?)').run(token, name);
     return res.json({ ok: true, token, firstTime: true });
   }
-  if (existing.pin_hash !== ph) {
-    const _r = LOGIN_FAILS[name] || { count: 0, until: 0 };
-    _r.count += 1;
-    if (_r.count >= 5) { _r.until = _now + 30 * 60 * 1000; _r.count = 0; LOGIN_FAILS[name] = _r; return res.status(429).json({ error: 'Too many attempts', retryMs: 30 * 60 * 1000 }); }
-    LOGIN_FAILS[name] = _r;
-    return res.status(401).json({ error: 'Incorrect PIN', attemptsLeft: 5 - _r.count });
+  // Migrate-on-login: a PIN stored under the old bare-sha256 scheme still
+  // authenticates once a pepper is introduced, and is rewritten to the peppered
+  // form in this same request. Only reachable while PIN_PEPPER is set, so it
+  // never weakens the unpeppered default.
+  let okPin = existing.pin_hash === ph;
+  if (!okPin && PIN_PEPPER && existing.pin_hash === hashPinLegacy(pin)) {
+    db.prepare('UPDATE users SET pin_hash = ? WHERE name = ?').run(ph, name);
+    okPin = true;
   }
+  if (!okPin) return _pinReject(name, _now, res);
   delete LOGIN_FAILS[name];
   const token = crypto.randomBytes(16).toString('hex');
   db.prepare('UPDATE users SET token = ? WHERE name = ?').run(token, name);
@@ -387,12 +460,38 @@ app.get('/api/interests', (req, res) => {
   const result = {}; rows.forEach(r => { result[r.activity_id] = JSON.parse(r.names); });
   res.json(result);
 });
+// Name half of a "Name|stars" vote entry. Mirrors intParse in public/index.html
+// and parseVote in tools/profile-export.js — lastIndexOf, so a name containing
+// a pipe still resolves.
+const _voteName = e => {
+  const s = String(e);
+  const i = s.lastIndexOf('|');
+  return i < 0 ? s : s.slice(0, i);
+};
+// The client posts the whole names array it currently believes in, so a
+// last-writer-wins store let two people voting at the same moment erase each
+// other, and let a stale tab resurrect votes that had since been withdrawn.
+// The body is now read only for the CALLER'S OWN intent: their entry decides
+// whether their vote is written, and its absence means withdraw. Every other
+// entry in the body is discarded and the stored row supplies those. Storage
+// stays the same "Name|stars" strings profile-export.js and the UI parse, and
+// updated_at still bumps on every accepted write.
 app.post('/api/interests', (req, res) => {
   const { activityId, names } = req.body;
   if (!activityId || !Array.isArray(names)) return res.status(400).json({ error: 'Invalid' });
-  db.prepare(`INSERT INTO interests (activity_id, names, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
-    ON CONFLICT(activity_id) DO UPDATE SET names=excluded.names, updated_at=CURRENT_TIMESTAMP`
-  ).run(activityId, JSON.stringify(names));
+  const actor = req.authUser;
+  const mine = names.find(e => _voteName(e) === actor);
+  db.transaction(() => {
+    const row = db.prepare('SELECT names FROM interests WHERE activity_id = ?').get(String(activityId));
+    let list = [];
+    if (row) { try { list = JSON.parse(row.names || '[]'); } catch (e) { list = []; } }
+    if (!Array.isArray(list)) list = [];
+    const next = list.filter(e => _voteName(e) !== actor);
+    if (mine !== undefined) next.push(String(mine));
+    db.prepare(`INSERT INTO interests (activity_id, names, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(activity_id) DO UPDATE SET names=excluded.names, updated_at=CURRENT_TIMESTAMP`
+    ).run(String(activityId), JSON.stringify(next));
+  })();
   res.json({ ok: true });
 });
 
@@ -411,17 +510,28 @@ app.post('/api/flights', (req, res) => {
   res.json({ ok: true });
 });
 
+// You may remove your own note/suggestion; planners may remove anyone's, since
+// they are the ones who curate the day. Legacy rows with a NULL author (written
+// before authorship was enforced) are planner-only.
+const _mayDelete = (actor, owner) => (owner != null && owner === actor) || plannerNames().includes(actor);
+
 app.get('/api/notes', (req, res) => {
   res.json(db.prepare('SELECT * FROM notes ORDER BY created_at DESC LIMIT 50').all()); 
 });
+// The author is the token holder — a body `author` is accepted (the shipped
+// client still sends one) but ignored, same rule as reservations and locations.
 app.post('/api/notes', (req, res) => {
-  const { author, message } = req.body;
-  if (!author || !message) return res.status(400).json({ error: 'Invalid' });
-  const r = db.prepare('INSERT INTO notes (author, message) VALUES (?, ?)').run(author, message.slice(0, 500));
+  const { message } = req.body;
+  if (!message) return res.status(400).json({ error: 'Invalid' });
+  const r = db.prepare('INSERT INTO notes (author, message) VALUES (?, ?)').run(req.authUser, message.slice(0, 500));
   res.json({ ok: true, id: r.lastInsertRowid });
 });
 app.delete('/api/notes/:id', (req, res) => {
-  db.prepare('DELETE FROM notes WHERE id = ?').run(req.params.id); res.json({ ok: true }); 
+  const row = db.prepare('SELECT author FROM notes WHERE id = ?').get(req.params.id);
+  // A missing row stays {ok:true}: DELETE has to remain idempotent for the
+  // client's offline outbox, which can replay the same delete after a reconnect.
+  if (row && !_mayDelete(req.authUser, row.author)) return res.status(403).json({ error: 'Not yours to delete' });
+  db.prepare('DELETE FROM notes WHERE id = ?').run(req.params.id); res.json({ ok: true });
 });
 
 // ── SUGGESTIONS (per-day third-party links the family pastes) ───────────────
@@ -429,14 +539,16 @@ app.get('/api/suggestions', (req, res) => {
   res.json(db.prepare('SELECT * FROM suggestions ORDER BY created_at ASC').all()); 
 });
 app.post('/api/suggestions', (req, res) => {
-  const { dayId, author, label, url } = req.body;
-  if (!dayId || !author || !url) return res.status(400).json({ error: 'Invalid' });
+  const { dayId, label, url } = req.body;
+  if (!dayId || !url) return res.status(400).json({ error: 'Invalid' });
   const r = db.prepare('INSERT INTO suggestions (day_id, author, label, url) VALUES (?, ?, ?, ?)')
-    .run(dayId, author, (label || '').slice(0, 120), url.slice(0, 500));
+    .run(dayId, req.authUser, (label || '').slice(0, 120), url.slice(0, 500));
   res.json({ ok: true, id: r.lastInsertRowid });
 });
 app.delete('/api/suggestions/:id', (req, res) => {
-  db.prepare('DELETE FROM suggestions WHERE id = ?').run(req.params.id); res.json({ ok: true }); 
+  const row = db.prepare('SELECT author FROM suggestions WHERE id = ?').get(req.params.id);
+  if (row && !_mayDelete(req.authUser, row.author)) return res.status(403).json({ error: 'Not yours to delete' });
+  db.prepare('DELETE FROM suggestions WHERE id = ?').run(req.params.id); res.json({ ok: true });
 });
 
 // ── RESERVATIONS ────────────────────────────────────────
@@ -590,6 +702,20 @@ app.post('/api/dayplan/move', (req, res) => {
     const nr = db.prepare('INSERT INTO day_schedule (day_id, activity_id, title, time_text, who, created_by, res_id) VALUES (?, ?, ?, ?, ?, ?, ?)')
       .run(String(target_day).slice(0, 20), row.activity_id, row.title, newTime, row.who, req.authUser, row.res_id);
     db.prepare('UPDATE day_schedule SET moved_to = ? WHERE id = ?').run(nr.lastInsertRowid, row.id);
+    // Carry any retro reviews over to the replacement row. Only rows with no
+    // trip-data activity_id are affected: reviewKey() keys those as
+    // 'sched:<row id>', which changes under a move, while a real activity id
+    // survives it unchanged. Without this the reviewer's answer stays pinned to
+    // the tombstone — /api/review/items only lists moved_to IS NULL rows, so the
+    // item comes back unanswered and the old answer is unreachable.
+    // review_additions is NOT touched: it has no activity_id column (name,
+    // title, category, day, rating, …), so it never keys on sched:<id>.
+    // try/catch for pre-retro databases that predate the reviews table; a
+    // failure here must not roll the move back.
+    try {
+      db.prepare('UPDATE reviews SET activity_id = ? WHERE activity_id = ?')
+        .run('sched:' + nr.lastInsertRowid, 'sched:' + row.id);
+    } catch (e) {}
     return nr.lastInsertRowid;
   })();
   res.json({ ok: true, id: newId, dayId: String(target_day) });
