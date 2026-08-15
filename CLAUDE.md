@@ -96,7 +96,7 @@ upgrade runbooks (Node 24, Express 5) are under `docs/maintenance/`.
 ## Autonomous runs & report hygiene
 - **Run parameters (extended Aug 2026)**: the mission runs until its queue is
   empty — no task-count cap. Scope tripwire: STOP AND REPORT (never rewrite)
-  if any single branch would exceed ~400 changed lines, or if a change would
+  if any single branch would exceed ~800 changed lines, or if a change would
   touch middleware order, `.env`, `data.db`, or `ecosystem.config.js`.
 - **Hard rules (unchanged)**: branches only — never commit to `main`, no
   merges; granular commits; push each branch when its work completes; no
