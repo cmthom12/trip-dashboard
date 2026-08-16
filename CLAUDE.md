@@ -11,6 +11,11 @@ End users make it "their trip" by editing data, not code.
 
 ## Scope & operating rules
 
+- **Feature-build ONLY — NEVER family info.** This repo exists to build the dashboard's
+  features. No real traveler names, dates, itineraries, PINs, addresses, or live trip
+  URLs may ever appear in a commit, branch, issue, or report here — the synthetic
+  Alex/Sam/Jordan/Riley/Casey data is the ONLY trip content permitted. Real trips live
+  in the local `family-trip-*` folders (not git repos, never pushed).
 - This repo is the clean **synthetic template**, not anyone's live trip. Real use means
   editing the `trip-data` block (see `BUILD_WITH_AI.md`), not changing this repo.
 - **Local-first:** work against `localhost`. Don't run anything in `deploy/`, SSH anywhere,
