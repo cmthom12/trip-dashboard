@@ -48,7 +48,9 @@ const COOKIE_DOMAIN = String(process.env.COOKIE_DOMAIN || '').trim();
 // The portal has no admin surface at all — no ADMIN_KEY, no /api/admin/* routes,
 // no admin page — so an env var is the whole mechanism rather than a settings
 // table plus routes plus UI. Unset/'0' = today's behavior: any FAMILY_NAMES name
-// may claim itself. Set to 1 once everyone has claimed theirs.
+// may claim itself. Set to 1 once everyone has claimed theirs. Its state is
+// surfaced by GET /api/config (`locked`) so the admin hub can display it, and
+// tools/portal-reset-pin.js re-opens ONE name under it (the reclaim table).
 const ROSTER_LOCKED = String(process.env.FAMILY_ROSTER_LOCKED || '').trim() === '1';
 const FETCH_TIMEOUT_MS = 2000;
 const CACHE_TTL_MS = 5 * 60 * 1000;
@@ -189,6 +191,12 @@ db.exec(`CREATE TABLE IF NOT EXISTS users (
   pin_hash TEXT NOT NULL,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 )`);
+// Reset-under-lock: a name tools/portal-reset-pin.js cleared may be claimed
+// again even while FAMILY_ROSTER_LOCKED=1 — that one name only. The row is
+// consumed by the next successful first-claim. (The tool creates this table
+// too, so it works against a db this server has not yet booted against.)
+db.exec('CREATE TABLE IF NOT EXISTS reclaim (name TEXT PRIMARY KEY, created_at TEXT DEFAULT CURRENT_TIMESTAMP)');
+const reclaimable = name => !!db.prepare('SELECT name FROM reclaim WHERE name = ?').get(name);
 
 // Same optional pepper as the trip app (see server.js): PIN_PEPPER keys an
 // HMAC so a leaked users table is not a 10,000-entry rainbow table away from
@@ -209,8 +217,11 @@ const registeredNames = () => db.prepare('SELECT name FROM users').all().map(r =
 
 // Boot config for the page: names come from .env, so the front end holds no
 // family list of its own. `sso` tells the UI whether to promise auto-login.
+// Locked: `registered` lists every name — the claimed / unclaimed distinction
+// is withheld so the sign-in page reveals nothing about who is still free.
 app.get('/api/config', (req, res) => {
-  res.json({ names: FAMILY_NAMES, suffix: PUBLIC_SUFFIX, sso: !!SSO_SECRET, registered: registeredNames() });
+  res.json({ names: FAMILY_NAMES, suffix: PUBLIC_SUFFIX, sso: !!SSO_SECRET,
+    registered: ROSTER_LOCKED ? FAMILY_NAMES.slice() : registeredNames(), locked: ROSTER_LOCKED });
 });
 
 app.post('/api/portal/login', (req, res) => {
@@ -224,10 +235,11 @@ app.post('/api/portal/login', (req, res) => {
   const ph = hashPin(pin);
   const row = db.prepare('SELECT pin_hash FROM users WHERE name = ?').get(name);
   let firstTime = false;
-  if (!row && ROSTER_LOCKED) {
-    // Locked roster: an unclaimed name cannot be claimed. Answered exactly like
-    // a wrong PIN — same status, same body, same strike — so the sign-in screen
-    // never reveals which names are still unclaimed.
+  if (!row && ROSTER_LOCKED && !reclaimable(name)) {
+    // Locked roster: an unclaimed name cannot be claimed (unless a reset
+    // re-opened exactly this one). Answered exactly like a wrong PIN — same
+    // status, same body, same strike — so the sign-in screen never reveals
+    // which names are still unclaimed.
     const r = LOGIN_FAILS[name] || { count: 0, until: 0 };
     r.count += 1;
     if (r.count >= 5) {
@@ -240,12 +252,19 @@ app.post('/api/portal/login', (req, res) => {
   if (!row) {
     // First claim, exactly like the trip app: whoever gets there first sets the
     // PIN. The family shares a household, not a threat model.
-    db.prepare('INSERT INTO users (name, pin_hash) VALUES (?, ?)').run(name, ph);
+    db.transaction(() => {
+      db.prepare('INSERT INTO users (name, pin_hash) VALUES (?, ?)').run(name, ph);
+      db.prepare('DELETE FROM reclaim WHERE name = ?').run(name); // one re-claim per reset
+    })();
     firstTime = true;
   } else if (row.pin_hash !== ph && PIN_PEPPER && row.pin_hash === hashPinLegacy(pin)) {
     // Migrate-on-login: accept the legacy sha256 hash once, rewriting it to the
-    // peppered form in the same request.
-    db.prepare('UPDATE users SET pin_hash = ? WHERE name = ?').run(ph, name);
+    // peppered form in the same request. Keyed on the hash just verified so a
+    // concurrent portal-reset-pin cannot be undone by this rewrite; zero rows
+    // changed = the credential is gone, fail stale rather than sign in.
+    const changed = db.prepare('UPDATE users SET pin_hash = ? WHERE name = ? AND pin_hash = ?')
+      .run(ph, name, row.pin_hash).changes;
+    if (!changed) return res.status(401).json({ error: 'Sign-in changed \u2014 please try again' });
   } else if (row.pin_hash !== ph) {
     const r = LOGIN_FAILS[name] || { count: 0, until: 0 };
     r.count += 1;

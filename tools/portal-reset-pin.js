@@ -6,6 +6,11 @@
 // design, so this is the whole recovery story: delete the row, and the next
 // visit to the portal re-claims that name as a first-time PIN set.
 //
+// With FAMILY_ROSTER_LOCKED=1 the deleted row alone would read as "wrong PIN"
+// forever, so the tool also stamps a reclaim row: first-claim re-opens for
+// THAT NAME ONLY, and the portal consumes the stamp on the next successful
+// claim. Every other unclaimed name stays locked out.
+//
 // It touches ONLY family-hub/data.db. Trip instances are untouched — their
 // sessions are separate, and any fam_sso cookie already in a phone's browser
 // stays valid until it expires (the cookie is self-contained; revoking it
@@ -96,11 +101,18 @@ if (list) {
 }
 if (!name) { console.error('portal-reset-pin: give a name (or --list). See --help.'); process.exit(2); }
 
-const removed = db.prepare('DELETE FROM users WHERE name = ?').run(name).changes;
+// Created here as well as by the server, so the tool works against a database
+// the new portal code has not booted against yet.
+db.exec('CREATE TABLE IF NOT EXISTS reclaim (name TEXT PRIMARY KEY, created_at TEXT DEFAULT CURRENT_TIMESTAMP)');
+const removed = db.transaction(() => {
+  const n = db.prepare('DELETE FROM users WHERE name = ?').run(name).changes;
+  db.prepare('INSERT OR REPLACE INTO reclaim (name) VALUES (?)').run(name);
+  return n;
+})();
 if (!removed) {
-  console.log(`No PIN was set for "${name}" — nothing to clear.`);
+  console.log(`No PIN was set for "${name}" — nothing to clear. The name is re-opened for first-claim anyway (matters only while FAMILY_ROSTER_LOCKED=1).`);
   if (claimed.length) console.log('Names that do have one: ' + claimed.join(', '));
   process.exit(0);
 }
 console.log(`Cleared the portal PIN for ${name} (${dbPath}).`);
-console.log('Next visit to the portal, that name offers "set PIN" again.');
+console.log('Next visit to the portal, that name can set a PIN again — even while FAMILY_ROSTER_LOCKED=1 (this one name only).');

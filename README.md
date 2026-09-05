@@ -197,3 +197,8 @@ A full deploy kit is included in **`deploy/`**. Three steps:
 certificate** (90-day, auto-renewing — recommended) and a **bare-IP certificate**
 (Let's Encrypt's new short-lived ~6-day cert, for when you don't have a domain).
 See **`deploy/DEPLOY.md`** for the walkthrough.
+
+Each hosted instance keeps its secrets in a `.env`; write a new one with
+`deploy/new-env.sh`, which also generates the `PIN_PEPPER` that keys the PIN
+hashes (what it is, and why it must never change once set: `ADMIN.md` §PIN
+pepper).

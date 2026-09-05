@@ -350,9 +350,15 @@ function validateTripData(d) {
   // per-day rate alone would not allow (it would cap a 4-day trip near 29 and
   // fire on every real one). The examples win: ~50 is a whole-trip figure for
   // anything up to about a week, and only trips longer than that scale up.
-  const SOFT_CAP = Math.max(50, Math.round(50 * days.length / 7));
+  const RATE = Math.round(50 * days.length / 7); // the unfloored per-length rate
+  const SOFT_CAP = Math.max(50, RATE);
   const OVER  = Math.round(SOFT_CAP * 1.3);   // "a meaningful margin" over
-  const UNDER = Math.round(SOFT_CAP * 0.4);   // far enough under to be thin
+  // UNDER comes from the UNFLOORED rate (min 5): a healthy 2-day trip with a
+  // dozen options must not be told it is thin against a 7-day cap.
+  const UNDER = Math.max(5, Math.round(RATE * 0.4));
+  // Names and locations are compared NFC-normalized: "é" typed as e + combining
+  // accent is the same traveler / place as the precomposed form.
+  const nfc = s => String(s).normalize('NFC');
   const MD_MIN = 6, MD_MAX = 10;              // items in one must-do group
   const STARVED = 0.45;                       // share of an even split
   // "A", "A and B", "A, B and C" — five names joined by " and " is unreadable,
@@ -372,7 +378,7 @@ function validateTripData(d) {
       'than spread them over more days — keep what someone would actually be disappointed to miss.');
   } else if (days.length && totalActs < UNDER) {
     barMisses++;
-    warn('This trip has only ' + actWord(totalActs) + spread + ' — aim for around ' + SOFT_CAP + '. ' +
+    warn('This trip has only ' + actWord(totalActs) + spread + ' — aim for around ' + Math.min(SOFT_CAP, Math.max(RATE, UNDER)) + '. ' +
       'There is not enough here for the family to have a real choice to vote on. Ask your AI for more ' +
       'options, spread across the different things the different people enjoy.');
   }
@@ -382,10 +388,10 @@ function validateTripData(d) {
   // it, so these are TAGS, not activities-per-person. Each traveler is compared
   // to the even share, never to a fixed number — a traveler who votes on less
   // and gets fewer, better-aimed options should sail through this.
-  const tagged = {};
-  famNames.forEach(n => { tagged[n] = 0; });
+  const tagged = {}, byNfc = {};
+  famNames.forEach(n => { tagged[n] = 0; byNfc[nfc(n)] = n; });
   days.forEach(day => (Array.isArray(day.activities) ? day.activities : []).forEach(a => {
-    if (a && Array.isArray(a.who)) a.who.forEach(n => { if (n in tagged) tagged[n] += 1; });
+    if (a && Array.isArray(a.who)) a.who.forEach(n => { const k = byNfc[nfc(n)]; if (k !== undefined) tagged[k] += 1; });
   }));
   const totalTags = famNames.reduce((n, x) => n + tagged[x], 0);
   const evenShare = famNames.length ? totalTags / famNames.length : 0;
@@ -418,6 +424,7 @@ function validateTripData(d) {
     // structural block above checks shape and duplicate locations; it does not
     // check this, so it is not a duplicate of anything.
     const dayLocs = [...new Set(days.map(day => (isStr(day.location) ? day.location : '')).filter(Boolean))];
+    const dayLocsNfc = dayLocs.map(nfc);
     d.mustDos.forEach((g, gi) => {
       if (!isObj(g)) return;
       const gl = 'mustDos[' + gi + '] ("' + ((g && g.location) || '?') + '")';
@@ -430,7 +437,7 @@ function validateTripData(d) {
             ? 'Ask your AI for the rest of what that place genuinely earns.'
             : 'Ask your AI to cut it back to the ones that place is actually known for.'));
       }
-      if (isStr(g.location) && g.location && dayLocs.length && !dayLocs.includes(g.location)) {
+      if (isStr(g.location) && g.location && dayLocs.length && !dayLocsNfc.includes(nfc(g.location))) {
         barMisses++;
         warn(gl + ': no day has that exact "location". The app files must-dos under the day location ' +
           'text, so this group never appears beside the days it belongs to. The day locations are ' +

@@ -99,14 +99,26 @@ function card(inst, ov) {
   return '<div class="card">' + head + body + '<div style="margin-top:8px">' + open + '</div></div>';
 }
 
+// The family portal is a second sign-in door with its own roster lock; each
+// trip's lock (on its own admin page) covers PIN sign-in on that trip only.
+var PORTAL = null;
+function portalCard(p) {
+  if (!p || !p.present) return '';
+  if (!p.ok) return '<div class="card"><h2>Family portal <span class="pill bad">unreachable</span></h2></div>';
+  return '<div class="card"><h2>Family portal <span class="pill ' + (p.locked ? 'ok' : 'bad') + '">roster lock ' + (p.locked ? 'ON' : 'off') + '</span></h2>' +
+    '<div class="muted">SSO ' + (p.sso ? 'on' : 'off') + ' · ' + p.names + ' names. Governed by FAMILY_ROSTER_LOCKED in the portal\'s .env. ' +
+    'Each trip\'s own roster lock covers PIN sign-in on that trip only; family who only sign in through the portal have no PIN row on the trips — that is normal.</div></div>';
+}
+
 function render(instances, ovByName) {
   $lock.hidden = false;
-  if (!instances.length) { $main.innerHTML = '<p class="muted">No instances found under TRIPS_ROOT.</p>'; return; }
-  $main.innerHTML = instances.map(function (i) { return card(i, ovByName && ovByName[i.name]); }).join('');
+  if (!instances.length) { $main.innerHTML = portalCard(PORTAL) + '<p class="muted">No instances found under TRIPS_ROOT.</p>'; return; }
+  $main.innerHTML = portalCard(PORTAL) + instances.map(function (i) { return card(i, ovByName && ovByName[i.name]); }).join('');
 }
 
 function board() {
-  fetch('/api/instances').then(function (r) { return r.json(); }).then(function (instances) {
+  fetch('/api/portal').then(function (r) { return r.json(); }).then(function (p) { PORTAL = p; }).catch(function () { PORTAL = null; })
+  .then(function () { return fetch('/api/instances'); }).then(function (r) { return r.json(); }).then(function (instances) {
     render(instances, null);
     return fetch('/api/overview', { headers: { 'X-Admin-Key': key() } })
       .then(function (r) { return r.json(); })

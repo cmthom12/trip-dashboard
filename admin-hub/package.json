@@ -1,6 +1,6 @@
 {
   "name": "trip-admin-hub",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "description": "Read-only aggregate admin console for all trip-dashboard instances on one droplet",
   "main": "server.js",

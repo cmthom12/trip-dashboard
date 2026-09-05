@@ -94,7 +94,7 @@
 
 var NAME_KEY = 'portal_name';       // display hint only — the cookie is the truth
 var $app = document.getElementById('app');
-var CFG = { names: [], suffix: '', sso: false, registered: [] };
+var CFG = { names: [], suffix: '', sso: false, registered: [], locked: false };
 var ME = '';                        // the signed-in name, per /api/portal/me
 var LOCK_KEY = 'portal_lock_';      // per-name lockout deadline, mirrors the trip app
 
@@ -185,8 +185,10 @@ function showPicker() {
     '<h2>Who are you?</h2><div class="names">' +
     CFG.names.map(function (n) {
       var reg = CFG.registered.indexOf(n) !== -1;
+      // Locked roster: one neutral affordance for every name (the server
+      // already lists them all as registered; this is belt and braces).
       return '<button type="button" data-name="' + esc(n) + '"><span>' + esc(n) + '</span>' +
-             '<span class="tag">' + (reg ? '🔒 has PIN' : '+ set PIN') + '</span></button>';
+             '<span class="tag">' + (CFG.locked ? 'Enter PIN' : reg ? '🔒 has PIN' : '+ set PIN') + '</span></button>';
     }).join('') +
     '</div>' +
     (CFG.sso ? '' : '<div class="foot">Automatic sign-in on your trips is off right now — ' +
@@ -198,7 +200,7 @@ function showPicker() {
 
 function showPin(who) {
   var lockUntil = parseInt(ls(LOCK_KEY + who) || '0', 10) || 0;
-  var isNew = CFG.registered.indexOf(who) === -1;
+  var isNew = !CFG.locked && CFG.registered.indexOf(who) === -1;
   var timer = null;
 
   function draw(err) {
@@ -317,7 +319,7 @@ function boot() {
     .then(function (cfg) {
       CFG = {
         names: cfg.names || [], suffix: cfg.suffix || '',
-        sso: !!cfg.sso, registered: cfg.registered || []
+        sso: !!cfg.sso, registered: cfg.registered || [], locked: !!cfg.locked
       };
       if (!CFG.sso) {
         ME = ls(NAME_KEY);

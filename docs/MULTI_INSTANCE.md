@@ -63,7 +63,9 @@ domain `trip-c.trips.example.com`).
    (the apply tool validates, injects the trip, patches the name lists).
    *Rollback: same as step 4 — still no live data.*
 
-6. **Environment**: `cp deploy/env.template /var/www/trips/trip-c/.env`, fill
+6. **Environment**: `bash deploy/new-env.sh /var/www/trips/trip-c` (writes the
+   `.env` from `deploy/env.template` with a fresh `PIN_PEPPER`, chmod 600 —
+   see `ADMIN.md` §PIN pepper; it refuses to overwrite an existing `.env`), fill
    `PORT=3003` and `CORS_ORIGIN=https://trip-c.trips.example.com`, then
    `chmod 600 /var/www/trips/trip-c/.env`. For `ADMIN_KEY`, the droplet runs
    **one shared key** — copy the `ADMIN_KEY=` line from any existing instance's

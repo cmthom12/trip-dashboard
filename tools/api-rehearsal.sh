@@ -29,8 +29,11 @@
 #   interests : two users' stars survive interleaved writes; a stale full-array
 #               body cannot erase someone else's star; omitting yourself removes
 #               only your own entry.
-#   notes     : a forged body author is ignored in favour of the token; a
-#               non-owner cannot delete; the owner and any planner can.
+#   notes     : a forged body author is ignored in favour of the token; over
+#               the wire, a non-owner non-planner is refused (403, row kept)
+#               while the owner and a planner both succeed — same trio for
+#               suggestions. The fixture imports the sample trip plus one
+#               NON-planner traveler (Morgan) to make that case expressible.
 #   import    : a trip missing a voted id is refused and names the id; force
 #               accepts it.
 #   day plan  : a move carries the retro review to the new sched:<id> key, and
@@ -38,7 +41,10 @@
 #   PIN pepper: with PIN_PEPPER set, a user whose stored hash is the legacy bare
 #               sha256 still logs in, and the stored hash is rewritten.
 #   roster    : locked, an unclaimed name is refused with the wrong-PIN answer
-#               while a claimed name still logs in; unlocking restores claiming.
+#               while a claimed name still logs in; /api/users withholds the
+#               claimed/unclaimed distinction while locked and keeps it while
+#               unlocked; an admin PIN reset re-opens first-claim for THAT NAME
+#               ONLY under lock; unlocking restores claiming.
 #
 # NODE_MODULES: the scratch instances borrow this repo's node_modules by
 # junction (Windows) / symlink (elsewhere), exactly as sso-rehearsal.sh does,
@@ -110,10 +116,28 @@ up $PORT_A; ck $? "instance healthy on :$PORT_A"
 
 API="localhost:$PORT_A"
 
-# ── sign in three of the sample travelers ───────────────────────────────────
+# ── fixture: the sample trip plus ONE non-planner ───────────────────────────
+# Every sample traveler is a planner, so the template alone cannot express
+# "neither owner nor planner". Re-import the same trip with Morgan added to
+# the family and planners pinned to the original five: Morgan signs in, votes
+# and writes like anyone else but holds no planner powers.
+echo "==> fixture: import the sample trip plus Morgan (non-planner)"
+curl -s "$API/api/trip/export" > "$TMP/trip0.json"
+node -e '
+  const fs = require("fs");
+  const t = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+  t.planners = t.family.map(f => f.name);
+  t.family.push({ name: "Morgan", color: ["#F3F4F6", "#374151"], interests: [] });
+  fs.writeFileSync(process.argv[2], JSON.stringify(t));
+' "$TMP/trip0.json" "$TMP/trip-morgan.json"
+ck $? "built the fixture trip: Morgan added, planners = the original five"
+curl -s -X POST "$API/api/trip" -H 'Content-Type: application/json' \
+  -H "X-Admin-Key: $ADMIN_KEY" --data-binary @"$TMP/trip-morgan.json" | grep -q '"ok":true'
+ck $? "fixture trip imported (Morgan is on the roster, not a planner)"
+
+# ── sign in four travelers ──────────────────────────────────────────────────
 # Alex and Sam are the two voters; Casey is a planner used for the planner-
-# delete case. All five sample travelers are planners in the template, so
-# "non-planner" is not a case this template can express — see the report.
+# delete cases; Morgan is the non-owner non-planner.
 login() { # login <name> <pin> — prints the token
   J -X POST "$API/api/login" -d "{\"name\":\"$1\",\"pin\":\"$2\"}" \
     | sed -n 's/.*"token":"\([^"]*\)".*/\1/p'
@@ -121,6 +145,7 @@ login() { # login <name> <pin> — prints the token
 TOK_ALEX="$(login Alex 1111)";  [ -n "$TOK_ALEX" ]; ck $? "Alex claimed a PIN and holds a token"
 TOK_SAM="$(login Sam 2222)";    [ -n "$TOK_SAM" ];  ck $? "Sam claimed a PIN and holds a token"
 TOK_CASEY="$(login Casey 3333)";[ -n "$TOK_CASEY" ];ck $? "Casey (planner) claimed a PIN and holds a token"
+TOK_MORGAN="$(login Morgan 5555)";[ -n "$TOK_MORGAN" ];ck $? "Morgan (non-planner) claimed a PIN and holds a token"
 
 auth() { # auth <token> <curl args...>
   local t="$1"; shift
@@ -169,6 +194,19 @@ auth "$TOK_SAM" -X POST "$API/api/interests" -d '{"activityId":"d2_museum","name
 curl -s "$API/api/interests" | grep -q 'd2_museum'
 ck $? "row does not exist yet → created with the caller's entry only"
 
+# ── H2.1: the stars half is clamped server-side to the UI's 1..3 ────────────
+echo "==> H2.1: stars are clamped server-side"
+stars_stored() { # stars_stored <activity> <entry-json> — prints the stored entry for Sam
+  auth "$TOK_SAM" -X POST "$API/api/interests" -d "{\"activityId\":\"$1\",\"names\":[$2]}" >/dev/null
+  curl -s "$API/api/interests" | grep -o '"d2_museum":\[[^]]*\]' | grep -o '"Sam[^"]*"'
+}
+[ "$(stars_stored d2_museum '"Sam|9"')" = '"Sam|3"' ];   ck $? "stars above the UI range (9) are stored as 3"
+[ "$(stars_stored d2_museum '"Sam|0"')" = '"Sam|1"' ];   ck $? "stars below the UI range (0) are stored as 1"
+[ "$(stars_stored d2_museum '"Sam|-4"')" = '"Sam|1"' ];  ck $? "negative stars are stored as 1"
+[ "$(stars_stored d2_museum '"Sam|abc"')" = '"Sam|2"' ]; ck $? "non-numeric stars become the UI default (2)"
+[ "$(stars_stored d2_museum '"Sam"')" = '"Sam|2"' ];     ck $? "a bare name (no stars) is stored as the UI default (2)"
+[ "$(stars_stored d2_museum '"Sam|3"')" = '"Sam|3"' ];   ck $? "an in-range value (3) is stored unchanged"
+
 # ── H3: notes take the author from the token; delete is owner-or-planner ────
 echo "==> H3: notes authorship and delete ownership"
 NID="$(auth "$TOK_ALEX" -X POST "$API/api/notes" -d '{"author":"Sam","message":"forged-author probe"}' \
@@ -177,11 +215,13 @@ NID="$(auth "$TOK_ALEX" -X POST "$API/api/notes" -d '{"author":"Sam","message":"
 curl -s "$API/api/notes" | grep -q '"author":"Alex","message":"forged-author probe"'
 ck $? "note POST with a forged body author lands as the token user, not the body"
 
-# Every sample traveler is a planner in this template, so there is no signed-in
-# identity that is neither owner nor planner — the over-the-wire non-owner
-# refusal is not expressible here. The HTTP cases below cover owner-delete and
-# planner-delete; the non-owner refusal is asserted against the server's own
-# rule in the unit-level check further down.
+# The ownership trio, all over HTTP against the real middleware and route:
+# a non-owner non-planner is refused and the row survives; the owner may
+# delete; a planner may delete anyone's.
+DCODE="$(code -X DELETE -H "X-Auth-Token: $TOK_MORGAN" "$API/api/notes/$NID")"
+[ "$DCODE" = 403 ]; ck $? "non-owner non-planner (Morgan) delete of Alex's note → 403 ($DCODE)"
+curl -s "$API/api/notes" | grep -q 'forged-author probe'
+ck $? "…and the note survives the refused delete"
 DCODE="$(curl -s -o /dev/null -w '%{http_code}' -X DELETE -H "X-Auth-Token: $TOK_CASEY" "$API/api/notes/$NID")"
 [ "$DCODE" = 200 ]; ck $? "planner delete of someone else's note succeeds ($DCODE)"
 curl -s "$API/api/notes" | grep -q 'forged-author probe'
@@ -197,25 +237,30 @@ DCODE="$(curl -s -o /dev/null -w '%{http_code}' -X DELETE -H "X-Auth-Token: $TOK
 DCODE="$(curl -s -o /dev/null -w '%{http_code}' -X DELETE -H "X-Auth-Token: $TOK_ALEX" "$API/api/notes/$NID2")"
 [ "$DCODE" = 200 ]; ck $? "re-deleting an already-deleted note stays 200 (outbox replay safety)"
 
-echo "==> H3: suggestions authorship"
-auth "$TOK_SAM" -X POST "$API/api/suggestions" \
-  -d '{"dayId":"day1","author":"Alex","label":"probe","url":"https://example.com"}' >/dev/null
+echo "==> H3: suggestions authorship and delete ownership"
+SG1="$(auth "$TOK_SAM" -X POST "$API/api/suggestions" \
+  -d '{"dayId":"day1","author":"Alex","label":"probe","url":"https://example.com"}' \
+  | sed -n 's/.*"id":\([0-9]*\).*/\1/p')"
+[ -n "$SG1" ]; ck $? "suggestion created (id $SG1)"
 curl -s "$API/api/suggestions" | grep -q '"author":"Sam"'
 ck $? "suggestion POST with a forged body author lands as the token user"
 
-# A non-owner, non-planner cannot delete. Proven at the unit level against the
-# server's own rule, since every sample traveler is a planner (see report).
-node -e '
-  const plannerNames = () => ["Alex","Sam","Jordan","Riley","Casey"];
-  const _mayDelete = (actor, owner) => (owner != null && owner === actor) || plannerNames().includes(actor);
-  const bad = [];
-  if (_mayDelete("Stranger", "Alex")) bad.push("non-owner non-planner was allowed");
-  if (!_mayDelete("Alex", "Alex")) bad.push("owner was refused");
-  if (!_mayDelete("Casey", "Alex")) bad.push("planner was refused");
-  if (_mayDelete("Stranger", null)) bad.push("legacy NULL-author row was not planner-only");
-  if (bad.length) { console.error(bad.join("; ")); process.exit(1); }
-'
-ck $? "delete rule: owner yes, planner yes, non-owner non-planner no, NULL author planner-only"
+# Same trio as notes, over the wire.
+DCODE="$(code -X DELETE -H "X-Auth-Token: $TOK_MORGAN" "$API/api/suggestions/$SG1")"
+[ "$DCODE" = 403 ]; ck $? "non-owner non-planner (Morgan) delete of Sam's suggestion → 403 ($DCODE)"
+curl -s "$API/api/suggestions" | grep -q "\"id\":$SG1,"
+ck $? "…and the suggestion survives the refused delete"
+DCODE="$(code -X DELETE -H "X-Auth-Token: $TOK_SAM" "$API/api/suggestions/$SG1")"
+[ "$DCODE" = 200 ]; ck $? "owner delete of their own suggestion succeeds ($DCODE)"
+curl -s "$API/api/suggestions" | grep -q "\"id\":$SG1,"
+[ $? -ne 0 ]; ck $? "…and it is gone"
+SG2="$(auth "$TOK_SAM" -X POST "$API/api/suggestions" \
+  -d '{"dayId":"day1","label":"planner-delete probe","url":"https://example.com/2"}' \
+  | sed -n 's/.*"id":\([0-9]*\).*/\1/p')"
+DCODE="$(code -X DELETE -H "X-Auth-Token: $TOK_CASEY" "$API/api/suggestions/$SG2")"
+[ "$DCODE" = 200 ]; ck $? "planner delete of someone else's suggestion succeeds ($DCODE)"
+curl -s "$API/api/suggestions" | grep -q 'planner-delete probe'
+[ $? -ne 0 ]; ck $? "…and it is gone"
 
 # ── M2: an import that would strand votes is refused ────────────────────────
 echo "==> M2: import refuses to orphan voted activity ids"
@@ -293,10 +338,21 @@ ck $? "/api/review/items lists the moved item exactly once"
 echo "==> H1: roster claim lock"
 curl -s "$API/api/admin/roster-lock" -H "X-Admin-Key: $ADMIN_KEY" | grep -q '"locked":false'
 ck $? "roster lock defaults to OFF (today's behavior)"
+# H1.b, unlocked: /api/users is the historical claimed list (the claiming-
+# window chrome is genuinely useful there), plus locked:false.
+U="$(curl -s "$API/api/users")"
+printf '%s' "$U" | grep -q '"locked":false'; ck $? "unlocked /api/users reports locked:false"
+printf '%s' "$U" | grep -q '"Alex"' && ! printf '%s' "$U" | grep -q '"Riley"'
+ck $? "unlocked /api/users lists claimed names (Alex) and not unclaimed ones (Riley)"
 
 curl -s -X POST "$API/api/admin/roster-lock" -H 'Content-Type: application/json' \
   -H "X-Admin-Key: $ADMIN_KEY" -d '{"locked":true}' | grep -q '"locked":true'
 ck $? "roster lock turned on via the admin route"
+# H1.b, locked: the claimed / unclaimed distinction is withheld.
+U="$(curl -s "$API/api/users")"
+printf '%s' "$U" | grep -q '"locked":true'; ck $? "locked /api/users reports locked:true"
+printf '%s' "$U" | grep -q '"Riley"' && printf '%s' "$U" | grep -q '"Jordan"'
+ck $? "locked /api/users lists every name, unclaimed ones included — no claimed-name oracle"
 
 # Jordan and Riley have never signed in, so both are unclaimed.
 RESP="$(J -X POST "$API/api/login" -d '{"name":"Jordan","pin":"9999"}')"
@@ -309,6 +365,23 @@ ck $? "…with the same 401 status a wrong PIN gets (no name-claimed oracle)"
 
 J -X POST "$API/api/login" -d '{"name":"Alex","pin":"1111"}' | grep -q '"token"'
 ck $? "locked: an already-claimed name still logs in"
+
+# H1.a: an admin PIN reset re-opens first-claim for THAT NAME ONLY under lock.
+echo "==> H1.a: reset-under-lock"
+J -X POST "$API/api/admin/reset-pin" -H "X-Admin-Key: $ADMIN_KEY" -d '{"name":"Jordan"}' | grep -q '"ok":true'
+ck $? "admin reset-pin for Jordan (never claimed) while locked"
+J -X POST "$API/api/login" -d '{"name":"Jordan","pin":"9999"}' | grep -q '"firstTime":true'
+ck $? "locked: Jordan can now claim a PIN (firstTime:true)"
+J -X POST "$API/api/login" -d '{"name":"Jordan","pin":"9999"}' | grep -q '"firstTime":false'
+ck $? "…and signs in again with it"
+J -X POST "$API/api/login" -d '{"name":"Riley","pin":"4444"}' | grep -q '"error":"Incorrect PIN"'
+ck $? "…while a different unclaimed name (Riley) stays locked out"
+J -X POST "$API/api/admin/reset-pin" -H "X-Admin-Key: $ADMIN_KEY" -d '{"name":"Alex"}' | grep -q '"ok":true'
+ck $? "admin reset-pin for Alex (claimed) while locked"
+J -X POST "$API/api/login" -d '{"name":"Alex","pin":"1212"}' | grep -q '"firstTime":true'
+ck $? "locked: Alex sets a new PIN (firstTime:true)"
+J -X POST "$API/api/login" -d '{"name":"Alex","pin":"1111"}' | grep -q '"error":"Incorrect PIN"'
+ck $? "…the old PIN is dead and the re-claim was consumed (a wrong PIN is refused, not treated as a claim)"
 
 curl -s -X POST "$API/api/admin/roster-lock" -H 'Content-Type: application/json' \
   -H "X-Admin-Key: $ADMIN_KEY" -d '{"locked":false}' | grep -q '"locked":false'

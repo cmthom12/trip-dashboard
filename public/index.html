@@ -1758,6 +1758,26 @@ function _obSet(q) {
     localStorage.setItem(OUTBOX_KEY, JSON.stringify(q));
   } catch (e) {}
 }
+// Every queued write carries the X-Auth-Token it was built with, and after a
+// re-login that token is dead. Each writer of tg_token (PIN login, SSO
+// adoption) calls this BEFORE any flush can run: it rewrites only the token
+// header on every queued item — order and X-Op-Id are untouched, so the
+// server's idempotency contract still holds for the replay.
+function obRestampToken(token) {
+  if (!token) return 0;
+  const q = _obGet();
+  let n = 0;
+  q.forEach(it => {
+    if (!it || !it.o) return;
+    it.o.headers = Object.assign({}, it.o.headers);
+    if (it.o.headers['X-Auth-Token'] !== token) {
+      it.o.headers['X-Auth-Token'] = token;
+      n++;
+    }
+  });
+  if (n) _obSet(q);
+  return n;
+}
 async function qfetch(url, opts) {
   opts = opts || {};
   if (opts.method && opts.method !== 'GET') {
@@ -1771,6 +1791,17 @@ async function qfetch(url, opts) {
   try {
     const r = await fetch(url, opts);
     if (r && r.status === 401 && opts.method && opts.method !== 'GET') {
+      // Dead session on a direct write: the write is still the user's. Queue
+      // it so the replay after re-login (which restamps the token) delivers
+      // it, then clear the session and let the PIN screen take over.
+      try {
+        const q = _obGet();
+        q.push({
+          u: url,
+          o: opts
+        });
+        _obSet(q);
+      } catch (e) {}
       try {
         localStorage.removeItem('tg_name');
         localStorage.removeItem('tg_token');
@@ -1810,21 +1841,14 @@ async function flushOutbox() {
     try {
       const r = await fetch(it.u, it.o);
       if (r && r.status === 401) {
-        // Stale/dead token: this write can never succeed — drop it instead of
-        // retrying forever. If the session itself is gone, the rest of the
-        // queue is doomed too (items carry their token), so stop flushing.
-        let tok = null;
-        try {
-          tok = localStorage.getItem('tg_token');
-        } catch (_e) {}
-        if (!tok) {
-          // Session is gone entirely: nothing left in the queue can succeed
-          // right now, but these are still unsent user writes. Re-queue this
-          // item and everything after it so a later login can replay them.
-          keep.push(...q.slice(i));
-          break;
-        }
-        continue;
+        // Dead session — whether localStorage still holds a (stale) token or
+        // none at all. Nothing left in the queue can succeed right now, but
+        // these are still unsent user writes: keep this item AND everything
+        // after it, in order, and stop. The next login restamps the token
+        // (obRestampToken) and the next flush replays them. The server never
+        // records a 401 in processed_ops, so the replay cannot double-apply.
+        keep.push(...q.slice(i));
+        break;
       }
       if (!r.ok) throw new Error('http');
       sent++;
@@ -2038,6 +2062,27 @@ function safeHttpUrl(u) {
   if (!/^(?:https?|mailto):/i.test(probe)) return null;
   return u.replace(/^[\u0000-\u0020]+/, '');
 }
+// A CSS colour from authorable content (family[].color) that is about to be
+// concatenated into an inline style attribute. Leaflet icons are raw HTML
+// strings, so a "colour" like `red;background:url(...)` would otherwise land in
+// the style verbatim. Allowlist, not escape: #hex (3/4/6/8 digits) or
+// rgb()/rgba()/hsl()/hsla() with numeric arguments only; anything else becomes
+// the neutral navy. React style OBJECTS (PCOLOR chips) do not need this — the
+// browser parses each property value on its own there and cannot be escaped.
+function safeColor(c, dflt) {
+  const d = dflt || '#0D2B4E';
+  if (typeof c !== 'string') return d;
+  const s = c.trim();
+  if (/^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(s)) return s;
+  if (/^(?:rgb|hsl)a?\(\s*[\d.]+%?(?:\s*[,\s\/]\s*[\d.]+%?){2,3}\s*\)$/i.test(s)) return s;
+  return d;
+}
+// Strip-don't-encode escape for text that lands in a Leaflet HTML string
+// (popups, divIcon html). Hoisted to top level so both TripMap effects — the
+// activity pins and the live-location pins — use the same rule.
+function mapEsc(v) {
+  return String(v == null ? '' : v).replace(/[<>&"]/g, '');
+}
 // Anchor for an authorable URL. A rejected URL degrades to a same-styled inert
 // span so the label still reads — losing the link is visible, losing the text
 // would look like a rendering bug.
@@ -2057,8 +2102,12 @@ function extLink(url, props) {
 function linkify(text) {
   return text.split(/(\s+)/).map((tok, i) => {
     if (/^https?:\/\//i.test(tok) || /^www\./i.test(tok)) {
-      const href = /^www\./i.test(tok) ? 'https://' + tok : tok;
-      return React.createElement("a", {
+      // Scheme policy lives in ONE place: the token test above only admits
+      // http(s):// and www., but the href still goes through safeHttpUrl so a
+      // future loosening of that regex can never mint a live link by itself.
+      // A rejected token falls through to the plain span below.
+      const href = safeHttpUrl(/^www\./i.test(tok) ? 'https://' + tok : tok);
+      if (href) return React.createElement("a", {
         key: i,
         href: href,
         target: "_blank",
@@ -2082,6 +2131,12 @@ function Login({
   const [name, setName] = useState(null);
   const [pin, setPin] = useState("");
   const [registered, setRegistered] = useState([]);
+  // Roster lock state from /api/users. While locked the server lists every
+  // name as registered and the chrome below shows the same neutral "Enter
+  // PIN" for all of them — the page must not reveal which names are still
+  // free. (Declared before `busy` on purpose: the render harness keys its
+  // state override on the first useState(false).)
+  const [rosterLocked, setRosterLocked] = useState(false);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const [lockUntil, setLockUntil] = useState(0);
@@ -2098,6 +2153,7 @@ function Login({
         if (r.ok) {
           const d = await r.json();
           setRegistered(d.registered || []);
+          setRosterLocked(!!d.locked);
         }
       } catch {}
     })();
@@ -2145,7 +2201,7 @@ function Login({
     }
     setBusy(false);
   };
-  const isNew = name && !registered.includes(name);
+  const isNew = name && !rosterLocked && !registered.includes(name);
   const _lkMs = Math.max(0, lockUntil - nowTs);
   const locked = _lkMs > 0;
   const _mm = String(Math.floor(_lkMs / 60000)).padStart(2, "0");
@@ -2247,7 +2303,7 @@ function Login({
         fontWeight: 600,
         opacity: .7
       }
-    }, reg ? "🔒 has PIN" : "+ set PIN"));
+    }, rosterLocked ? "Enter PIN" : reg ? "🔒 has PIN" : "+ set PIN"));
   }))), step === "pin" && React.createElement(React.Fragment, null, React.createElement("button", {
     onClick: () => {
       setStep("name");
@@ -3112,8 +3168,8 @@ function TripMap({
     const gm = q => 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(q);
     // Leaflet popups/icons take raw HTML strings, so every value that comes from
     // trip-data has to be stripped before it lands in one. Same strip-don't-encode
-    // rule the live-location markers use, hoisted here so dot() and pop() share it.
-    const esc = v => String(v == null ? '' : v).replace(/[<>&"]/g, '');
+    // rule the live-location markers use (mapEsc, top level) so dot() and pop() share it.
+    const esc = mapEsc;
     // o = {size, ring, muted, badge} — the interest overlay re-icons activity pins:
     // bigger + ring for the viewer's 3★, grey/faded when they haven't voted.
     // badge overlays a small calendar glyph = the activity is on the day plan.
@@ -3437,7 +3493,9 @@ function TripMap({
     if (mapRef.current) layer.addTo(mapRef.current);
     const FAM_COLOR = {};
     (TRIP.family || []).forEach(f => {
-      FAM_COLOR[f.name] = Array.isArray(f.color) && f.color[1] ? f.color[1] : "#0D2B4E";
+      // safeColor: family[].color is authorable and this value is concatenated
+      // into a raw style attribute below (the live pin is a Leaflet divIcon).
+      FAM_COLOR[f.name] = safeColor(Array.isArray(f.color) ? f.color[1] : null);
     });
     let me = "";
     try { me = localStorage.getItem('tg_name') || ""; } catch (e) {}
@@ -3447,14 +3505,14 @@ function TripMap({
         const own = r.name === me;
         const icon = L.divIcon({
           className: 'tm-live',
-          html: '<div style="width:22px;height:22px;border-radius:50%;background:' + (FAM_COLOR[r.name] || "#0D2B4E") + ';color:#fff;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;border:2px ' + (own ? 'dashed' : 'solid') + ' #fff;box-shadow:0 1px 5px rgba(0,0,0,.4)">' + String(r.name || '?').charAt(0) + '</div>',
+          html: '<div style="width:22px;height:22px;border-radius:50%;background:' + safeColor(FAM_COLOR[r.name]) + ';color:#fff;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;border:2px ' + (own ? 'dashed' : 'solid') + ' #fff;box-shadow:0 1px 5px rgba(0,0,0,.4)">' + mapEsc(String(r.name || '?').charAt(0)) + '</div>',
           iconSize: [22, 22],
           iconAnchor: [11, 11]
         });
         const mins = Math.max(0, Math.round(r.agoS / 60));
         L.marker([r.lat, r.lng], {
           icon: icon
-        }).addTo(layer).bindPopup('<b>' + String(r.name).replace(/[<>&]/g, '') + '</b> \xB7 ' + (mins === 0 ? 'just now' : mins + ' min ago') + (r.acc > 100 ? ' (\xB1' + Math.round(r.acc) + ' m)' : ''));
+        }).addTo(layer).bindPopup('<b>' + mapEsc(r.name) + '</b> \xB7 ' + (mins === 0 ? 'just now' : mins + ' min ago') + (r.acc > 100 ? ' (\xB1' + Math.round(r.acc) + ' m)' : ''));
       });
     };
     const poll = () => {
@@ -5132,7 +5190,7 @@ function MustDoSection({
       color: "#9CA3AF",
       fontWeight: 600
     }
-  }, g.items.length, " ", g.items.length === 1 ? "item" : "items"), currentDay && g.location && currentDay.location === g.location && React.createElement("span", {
+  }, g.items.length, " ", g.items.length === 1 ? "item" : "items"), currentDay && g.location && String(currentDay.location || "").normalize("NFC") === String(g.location).normalize("NFC") && React.createElement("span", {
     style: {
       fontSize: 10,
       fontWeight: 800,
@@ -5207,7 +5265,10 @@ function MustDoSection({
         WebkitBoxOrient: "vertical",
         overflow: "hidden"
       })
-    }, it.desc), shown && it.note && React.createElement("div", {
+    }, it.desc), React.createElement(DietaryNote, {
+      act: it,
+      who: user
+    }), shown && it.note && React.createElement("div", {
       style: {
         marginTop: 7,
         background: "#EFF6FF",
@@ -6406,6 +6467,7 @@ function App() {
         localStorage.setItem("tg_name", d.name);
         localStorage.setItem("tg_token", d.token);
       } catch (e) {}
+      obRestampToken(d.token); // queued offline writes now carry this session
       setUser(d.name);
       setAuthed(true);
     }).catch(() => {});
@@ -6428,6 +6490,7 @@ function App() {
       localStorage.setItem("tg_name", name);
       localStorage.setItem("tg_token", token);
     } catch {}
+    obRestampToken(token); // before authed flips and the flush effect runs
     setUser(name);
     setAuthed(true);
   };
@@ -6851,9 +6914,14 @@ function App() {
     if (onlyMine && !(a.who || []).includes(user)) return false;
     if (dietOnly) {
       const dd = dietaryFor(a, user);
-      // Only an explicit "unsuitable" from the venue hides anything. Unknown
-      // stays visible — it is not a no, and treating it as one would be a lie.
-      if (dd && dd.unsuitable.length) return false;
+      // Only an explicit "unsuitable" from the venue, for something the person
+      // AVOIDS, hides anything. A "limits" conflict keeps the card — the gray
+      // chip says so. Unknown stays visible — it is not a no, and treating it
+      // as one would be a lie.
+      if (dd && dd.unsuitable.length) {
+        const avoids = myDietary(user).filter(e => e.level !== "limits").map(e => e.tag);
+        if (dd.unsuitable.some(t => avoids.indexOf(t) >= 0)) return false;
+      }
     }
     if (filter !== "all" && a.cat !== filter) return false;
     if (search) {
@@ -7501,7 +7569,7 @@ function App() {
     }
   }, "\u2B50 For ", user), myDietary(user).length > 0 && React.createElement("button", {
     onClick: () => setDietOnly(!dietOnly),
-    title: "Hides only places that told us they cannot do without something you avoid. Anything unknown stays.",
+    title: "Filters this day's activities only (the Must see & do list is not filtered). Hides just the places that told us they cannot do without something you AVOID; things you merely limit stay, with their chip. Anything unknown stays.",
     style: {
       display: "flex",
       alignItems: "center",

@@ -17,6 +17,7 @@ const app = express();
 const PORT = process.env.PORT || 3010;
 const TRIPS_ROOT = process.env.TRIPS_ROOT || '/var/www/trips';
 const BACKUPS_ROOT = process.env.BACKUPS_ROOT || '/root/db-backups';
+const FAMILY_DIR = process.env.FAMILY_DIR || '/var/www/family-hub';
 const FANOUT_TIMEOUT_MS = 3000;
 const APP_VERSION = (() => { try { return require('./package.json').version || ''; } catch (e) { return ''; } })();
 
@@ -124,6 +125,22 @@ app.get('/api/overview', async (req, res) => {
                           : { name: i.name, ok, status: r.value.status,
                               error: (r.value.data && r.value.data.error) || ('HTTP ' + r.value.status) });
   }));
+});
+
+// The family portal is a SECOND sign-in door with its own roster lock
+// (FAMILY_ROSTER_LOCKED in its .env, surfaced by its keyless /api/config).
+// Keyless here too, like /api/instances: lock state is not a secret, and the
+// hub page sits behind its own key gate. No portal on this droplet = present:false.
+app.get('/api/portal', async (req, res) => {
+  let port = 0;
+  try { port = parseInt(readEnv(path.join(FAMILY_DIR, '.env')).PORT, 10) || 0; } catch (e) {}
+  if (!port) return res.json({ present: false });
+  try {
+    const r = await fetchInstance(port, '/api/config');
+    const d = r.data || {};
+    res.json({ present: true, ok: r.status === 200, locked: !!d.locked, sso: !!d.sso,
+      names: Array.isArray(d.names) ? d.names.length : 0 });
+  } catch (e) { res.json({ present: true, ok: false, error: 'unreachable' }); }
 });
 
 app.get('/api/health', (req, res) => res.json({ status: 'ok', version: APP_VERSION, time: new Date().toISOString() }));

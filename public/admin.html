@@ -66,7 +66,9 @@ h2{font-size:14px;color:#0D2B4E;margin:18px 0 8px}
     <div id="travelers"></div>
     <div class="card" style="margin-top:10px">
       <div class="gl"><span>Roster claim lock</span><b id="rosterLockState">&mdash;</b></div>
-      <p style="font-size:13px;margin:8px 0">While this is <b>off</b> (the default), anyone who reaches the sign-in page can claim any unclaimed traveler name by picking a PIN. Turn it <b>on</b> once everyone has signed in at least once: unclaimed names are then refused, with the same message a wrong PIN gets, so the page gives nothing away. People who already have a PIN are unaffected.</p>
+      <p style="font-size:13px;margin:8px 0">While this is <b>off</b> (the default), anyone who reaches the sign-in page can claim any unclaimed traveler name by picking a PIN. Turn it <b>on</b> once everyone has signed in at least once: unclaimed names are then refused with the same message a wrong PIN gets, and the sign-in page shows every name the same way (no &ldquo;has PIN&rdquo; / &ldquo;set PIN&rdquo; hint), so it gives nothing away. People who already have a PIN are unaffected.</p>
+      <p style="font-size:13px;margin:8px 0"><b>Reset PIN still works while locked</b>: it re-opens first-claim for that one name only, so the person picks a new PIN and the lock stays on for everyone else.</p>
+      <p style="font-size:13px;margin:8px 0">This lock closes PIN first-claim on <b>this trip</b>. The family portal is a second door with its own lock (<code>FAMILY_ROSTER_LOCKED</code> in the portal&rsquo;s <code>.env</code>, shown in the admin hub); someone who only ever signs in through the portal has no PIN row here, and that is normal.</p>
       <div class="actions">
         <button id="rosterLockBtn" disabled>&mdash;</button>
       </div>
@@ -226,14 +228,22 @@ h2{font-size:14px;color:#0D2B4E;margin:18px 0 8px}
     if (!validatedTrip) return;
     fetch('/api/trip').then(function (r) { return r.ok ? r.json() : null; }).catch(function () { return null; }).then(function (cur) {
       var lines = ['Import "' + ((validatedTrip.trip || {}).title || '?') + '" and replace the current trip for EVERYONE?', '',
-        'PINs and votes are kept for travelers whose names stay the same. Names not in the new trip can no longer sign in.'];
+        'PINs and votes are kept for travelers whose names stay the same. Names not in the new trip can no longer sign in.',
+        'Votes follow activity and must-do IDS, not titles: renaming or editing an item keeps its stars as long as its id is unchanged; an item whose id changes loses them.'];
       if (cur) {
-        var oldIds = [], newIds = [];
-        (cur.days || []).forEach(function (d) { (d.activities || []).forEach(function (a) { if (a.id) oldIds.push(a.id); }); });
-        (validatedTrip.days || []).forEach(function (d) { (d.activities || []).forEach(function (a) { if (a.id) newIds.push(a.id); }); });
+        // Same id space the server checks (tools/lib/trip-store.js): day
+        // activities AND must-do items, so this dialog and the server's
+        // orphan list below agree on what counts.
+        var idsOf = function (t) {
+          var ids = [];
+          (t.days || []).forEach(function (d) { (d.activities || []).forEach(function (a) { if (a.id) ids.push(a.id); }); });
+          (t.mustDos || []).forEach(function (g) { (g.items || []).forEach(function (it) { if (it.id) ids.push(it.id); }); });
+          return ids;
+        };
+        var oldIds = idsOf(cur), newIds = idsOf(validatedTrip);
         var kept = oldIds.filter(function (id) { return newIds.indexOf(id) >= 0; }).length;
         if (oldIds.length && kept < oldIds.length / 2) {
-          lines.push('', '⚠ ' + (oldIds.length - kept) + ' of ' + oldIds.length + ' current activity ids disappear in the new trip — votes on them will be orphaned (harmless but gone from view).');
+          lines.push('', '⚠ ' + (oldIds.length - kept) + ' of ' + oldIds.length + ' current activity/must-do ids disappear in the new trip — votes on them will be orphaned (harmless but gone from view). The server will list the ones that actually carry votes.');
         }
       }
       if (!window.confirm(lines.join('\n'))) return;
@@ -306,7 +316,7 @@ h2{font-size:14px;color:#0D2B4E;margin:18px 0 8px}
   }
   $('rosterLockBtn').addEventListener('click', function () {
     var want = $('rosterLockBtn').getAttribute('data-locked') !== '1';
-    if (want && !window.confirm('Lock the roster?\n\nNames that have never signed in will no longer be able to claim a PIN. Anyone who still needs to sign in for the first time must do it before you lock, or you unlock again for them.')) return;
+    if (want && !window.confirm('Lock the roster?\n\nNames that have never signed in will no longer be able to claim a PIN. Anyone who still needs to sign in for the first time must do it before you lock — or you use Reset PIN on that one name later, which re-opens it even while locked. Portal (SSO) sign-in is not affected by this lock.')) return;
     $('rosterLockBtn').disabled = true;
     api('/api/admin/roster-lock', { method: 'POST', body: { locked: want } })
       .then(function (j) { renderRosterLock(!!j.locked); flash(j.locked ? 'Roster locked' : 'Roster unlocked'); })

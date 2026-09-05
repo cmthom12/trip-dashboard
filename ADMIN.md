@@ -29,6 +29,31 @@ ADMIN_KEY=paste-your-key npm start          # macOS/Linux/Git Bash
 set ADMIN_KEY=paste-your-key && npm start   # Windows Command Prompt
 ```
 
+## PIN pepper (`PIN_PEPPER`)
+
+A 4-digit PIN has only 10,000 possible values, so a bare SHA-256 of it is
+reversible by anyone who gets hold of the `users` table. `PIN_PEPPER` is a
+secret that lives only in the environment (the instance's `.env`, never the
+database). With it set, PINs are stored as an HMAC keyed by that secret, and a
+leaked table is no longer a 10,000-row lookup away from every PIN.
+
+- **New stand-ups get one automatically.** `deploy/new-env.sh` writes a fresh
+  `.env` with a generated `PIN_PEPPER` (`openssl rand -hex 24`); the family
+  portal's `.env` is written the same way. Existing `.env` files are never
+  touched by it.
+- **Turning it on for a live instance is safe.** Add `PIN_PEPPER=<random>` to
+  that instance's `.env` and reload PM2. Nobody is reset: each person's stored
+  hash is rewritten to the peppered form the next time they sign in with their
+  existing PIN (migrate-on-login), and until they do the old hash still
+  verifies. The rewrite is keyed on the hash it just verified, so an admin
+  reset that lands at the same moment wins.
+- **Never change or clear it once set.** Hashes written under one pepper do not
+  match under another, so every already-migrated PIN would stop working and
+  need a Reset PIN from this page. Treat it like the database: it is backed up
+  with the `.env`, and it is rotated only on purpose.
+- The portal keeps its own `PIN_PEPPER`, independent of the trips' — separate
+  users table, no benefit in sharing one value.
+
 ## Using it
 
 Open **`/admin.html`** on your dashboard (e.g. `https://your-site/admin.html`) and

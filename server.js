@@ -123,6 +123,15 @@ const setSetting = (k, v) => db.prepare(
 // An operator turns it on once the family has claimed their names, after which
 // an unclaimed name can no longer be taken by whoever finds the URL.
 const rosterLocked = () => getSetting('roster_locked', '0') === '1';
+// Reset-under-lock. An admin PIN reset must re-open first-claim for THAT NAME
+// ONLY, even while the roster is locked — otherwise a reset under lock is just
+// a row delete the lock then answers with "wrong PIN" forever. The reset
+// stamps a reclaim entry; the next successful first-claim of that name
+// consumes it. While unlocked the stamp is harmless (claiming is open anyway)
+// and is consumed the same way.
+const _reclaimKey = name => 'reclaim:' + name;
+const reclaimable = name => getSetting(_reclaimKey(name), '0') === '1';
+const _clearReclaim = name => db.prepare('DELETE FROM app_settings WHERE key = ?').run(_reclaimKey(name));
 
 app.get('/api/admin/roster-lock', (req, res) => {
   res.json({ locked: rosterLocked() });
@@ -279,11 +288,13 @@ app.get('/api/admin/overview', (req, res) => {
 });
 
 // Clears the login credential only: the user's PIN row + every session token.
-// Registration re-opens for that name on next login; votes/notes/content untouched.
+// Registration re-opens for that name on next login — including while the
+// roster is locked (the reclaim stamp); votes/notes/content untouched.
 const _adminClearCred = name => db.transaction(() => {
   const hadPin = !!db.prepare('SELECT name FROM users WHERE name = ?').get(name);
   const tokensRevoked = db.prepare('DELETE FROM user_tokens WHERE name = ?').run(name).changes;
   db.prepare('DELETE FROM users WHERE name = ?').run(name);
+  setSetting(_reclaimKey(name), '1');
   return { hadPin, tokensRevoked };
 })();
 
@@ -365,12 +376,16 @@ app.post('/api/login', (req, res) => {
   const ph = hashPin(pin);
   const existing = db.prepare('SELECT * FROM users WHERE name = ?').get(name);
   if (!existing) {
-    // Locked roster: an unclaimed name cannot be claimed. Answered exactly like
-    // a wrong PIN so the lock leaks nothing about who has signed up.
-    if (rosterLocked()) return _pinReject(name, _now, res);
+    // Locked roster: an unclaimed name cannot be claimed — unless an admin
+    // reset re-opened exactly this name. Answered exactly like a wrong PIN so
+    // the lock leaks nothing about who has signed up.
+    if (rosterLocked() && !reclaimable(name)) return _pinReject(name, _now, res);
     const token = crypto.randomBytes(16).toString('hex');
-    db.prepare('INSERT INTO users (name, pin_hash, token) VALUES (?, ?, ?)').run(name, ph, token);
-    db.prepare('INSERT OR IGNORE INTO user_tokens (token, name) VALUES (?, ?)').run(token, name);
+    db.transaction(() => {
+      db.prepare('INSERT INTO users (name, pin_hash, token) VALUES (?, ?, ?)').run(name, ph, token);
+      db.prepare('INSERT OR IGNORE INTO user_tokens (token, name) VALUES (?, ?)').run(token, name);
+      _clearReclaim(name); // one re-claim per reset
+    })();
     return res.json({ ok: true, token, firstTime: true });
   }
   // Migrate-on-login: a PIN stored under the old bare-sha256 scheme still
@@ -379,7 +394,14 @@ app.post('/api/login', (req, res) => {
   // never weakens the unpeppered default.
   let okPin = existing.pin_hash === ph;
   if (!okPin && PIN_PEPPER && existing.pin_hash === hashPinLegacy(pin)) {
-    db.prepare('UPDATE users SET pin_hash = ? WHERE name = ?').run(ph, name);
+    // Keyed on the legacy hash just verified: if an admin reset or removed
+    // this name between the SELECT above and now, the row is gone (or already
+    // re-claimed under another hash) and this rewrite must not resurrect it.
+    // Zero rows changed = the credential we verified no longer exists, so the
+    // login fails stale instead of minting a token for a vanished row.
+    const changed = db.prepare('UPDATE users SET pin_hash = ? WHERE name = ? AND pin_hash = ?')
+      .run(ph, name, existing.pin_hash).changes;
+    if (!changed) return res.status(401).json({ error: 'Sign-in changed \u2014 please try again' });
     okPin = true;
   }
   if (!okPin) return _pinReject(name, _now, res);
@@ -391,7 +413,15 @@ app.post('/api/login', (req, res) => {
 });
 
 app.get('/api/users', (req, res) => {
-  res.json({ registered: db.prepare('SELECT name FROM users').all().map(r => r.name) });
+  const locked = rosterLocked();
+  // Locked: the claimed / unclaimed distinction is withheld — every name is
+  // listed as registered, so the sign-in page (new or an older cached one)
+  // shows every name the same way and reveals nothing about who is still
+  // free. Unlocked: exactly the historical list, plus locked:false.
+  const registered = locked
+    ? allowedNames()
+    : db.prepare('SELECT name FROM users').all().map(r => r.name);
+  res.json({ registered, locked });
 });
 
 // Session check for restore-on-boot: trusts the token only (GETs skip the auth middleware).
@@ -468,6 +498,16 @@ const _voteName = e => {
   const i = s.lastIndexOf('|');
   return i < 0 ? s : s.slice(0, i);
 };
+// Stars half of the entry, clamped to the UI's 1..3. A bare name (legacy, no
+// pipe) or a non-numeric suffix is the UI default (2); an out-of-range integer
+// is clamped rather than refused, so a stale client never loses its vote.
+const _voteStars = e => {
+  const s = String(e);
+  const i = s.lastIndexOf('|');
+  if (i < 0) return 2;
+  const n = parseInt(s.slice(i + 1), 10);
+  return Number.isFinite(n) ? Math.min(3, Math.max(1, n)) : 2;
+};
 // The client posts the whole names array it currently believes in, so a
 // last-writer-wins store let two people voting at the same moment erase each
 // other, and let a stale tab resurrect votes that had since been withdrawn.
@@ -480,7 +520,11 @@ app.post('/api/interests', (req, res) => {
   const { activityId, names } = req.body;
   if (!activityId || !Array.isArray(names)) return res.status(400).json({ error: 'Invalid' });
   const actor = req.authUser;
-  const mine = names.find(e => _voteName(e) === actor);
+  const mineRaw = names.find(e => _voteName(e) === actor);
+  // H2.1: the stored entry is rebuilt from the token user and a CLAMPED star
+  // count — the body's spelling of either is never stored verbatim. Storage
+  // stays "Name|stars", exactly what intParse / profile-export read.
+  const mine = mineRaw === undefined ? undefined : actor + '|' + _voteStars(mineRaw);
   db.transaction(() => {
     const row = db.prepare('SELECT names FROM interests WHERE activity_id = ?').get(String(activityId));
     let list = [];

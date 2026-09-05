@@ -199,7 +199,8 @@ Placeholders as usual; substitute your real domain for `example.com`.
    exist, see step 6), then `cd /var/www/family-hub && npm install --omit=dev`.
    *Rollback: `rm -rf /var/www/family-hub` — but note that from v1.1.0 the PINs
    live here in `data.db`, so back it up first if anyone has set one.*
-5. **Env**: `cp family-hub/deploy/env.template /var/www/family-hub/.env`, keep
+5. **Env**: `bash deploy/new-env.sh /var/www/family-hub family-hub/deploy/env.template`
+   (writes the `.env` with a fresh `PIN_PEPPER`, chmod 600), keep
    `PORT=3011`, set `PUBLIC_SUFFIX`, `FAMILY_NAMES` and `COOKIE_DOMAIN`, leave
    `FAMILY_SSO_SECRET` empty for now, `chmod 600 .env`. *Rollback: delete the file.*
 6. **PM2**: `cp family-hub/deploy/ecosystem.template.config.js /var/www/family-hub/ecosystem.config.js`,

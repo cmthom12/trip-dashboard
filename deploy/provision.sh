@@ -15,7 +15,10 @@ export DEBIAN_FRONTEND=noninteractive
 
 echo "==> base packages"
 apt-get update -y
-apt-get install -y curl ca-certificates gnupg build-essential python3 ufw
+# sqlite3: the CLI deploy/backup-all.sh needs for consistent online backups.
+# Without it the nightly backup FAILS CLOSED for WAL-mode databases (the
+# family hub's), so it is part of the base set rather than an afterthought.
+apt-get install -y curl ca-certificates gnupg build-essential python3 ufw sqlite3
 
 echo "==> Node.js ${NODE_MAJOR}.x (NodeSource)"
 if ! command -v node >/dev/null || [ "$(node -v | grep -oE '[0-9]+' | head -1)" != "${NODE_MAJOR}" ]; then
@@ -55,3 +58,5 @@ echo "  app dir: ${APP_DIR}"
 echo
 echo "Next:  1) from your laptop, run deploy.sh to push the app"
 echo "       2) back here, edit + run setup-https.sh to turn on HTTPS"
+echo "       3) per instance: bash deploy/new-env.sh <instance dir>  — writes its .env"
+echo "          with a fresh PIN_PEPPER (never re-run on an existing .env; ADMIN.md, PIN pepper)"

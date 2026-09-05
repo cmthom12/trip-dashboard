@@ -31,6 +31,13 @@
 #   off-path : an instance with FAMILY_SSO_SECRET unset answers /api/sso with
 #              404 (SSO is invisible, not merely disabled) while /api/login
 #              still works — the "instance that never joined the portal" case.
+#   two locks: the instance roster lock does NOT gate /api/sso (a portal cookie
+#              outranks the PIN lock, and SSO-only family have no users row to
+#              be locked against) while the PIN door on that instance is
+#              closed; the portal's own lock (FAMILY_ROSTER_LOCKED=1) refuses a
+#              new first-claim, still signs in an already-claimed user, and
+#              /api/config surfaces the lock while withholding the claimed
+#              distinction; tools/portal-reset-pin.js re-opens ONE name under it.
 #
 # NODE_MODULES: the scratch instances borrow this repo's node_modules by
 # junction (Windows) / symlink (elsewhere), exactly as hub-rehearsal.sh and
@@ -48,6 +55,7 @@ PORT_A=3901   # trip instance, FAMILY_SSO_SECRET set
 PORT_B=3902   # trip instance, FAMILY_SSO_SECRET unset
 PORT_P=3910   # the family portal
 SECRET="sso-rehearsal-secret-do-not-use-in-production"
+AKEY="sso-rehearsal-admin-key-do-not-use-in-production"   # instance A only: to toggle its roster lock
 # Morgan is in the PORTAL's family but not in the trip's family[] — the
 # "valid portal session, wrong trip" case. The rest are the sample travelers.
 PORTAL_NAMES="Alex,Sam,Jordan,Riley,Casey,Morgan"
@@ -118,7 +126,7 @@ echo "==> booting portal :$PORT_P, instance A :$PORT_A (SSO on), instance B :$PO
 cd "$P"; PORT=$PORT_P FAMILY_SSO_SECRET="$SECRET" FAMILY_NAMES="$PORTAL_NAMES" \
   TRIPS_DIR="$TMP/no-such-trips-dir" node server.js > server.log 2>&1 &
 PID_P=$!
-cd "$A"; PORT=$PORT_A FAMILY_SSO_SECRET="$SECRET" node server.js > server.log 2>&1 &
+cd "$A"; PORT=$PORT_A FAMILY_SSO_SECRET="$SECRET" ADMIN_KEY="$AKEY" node server.js > server.log 2>&1 &
 PID_A=$!
 cd "$B"; PORT=$PORT_B node server.js > server.log 2>&1 &
 PID_B=$!
@@ -151,6 +159,7 @@ process.stdout.write(String((who ? db.prepare(sql).get(who) : db.prepare(sql).ge
 db.close();
 COUNT
 count() { node "$TMP/count.js" "$BSQ" "$A/data.db" "$@"; }
+countp() { node "$TMP/count.js" "$BSQ" "$P/data.db" "$@"; }
 
 # ── the yes-path ────────────────────────────────────────────────────────────
 echo "==> portal first-claim login"
@@ -240,6 +249,57 @@ J -X POST "localhost:$PORT_B/api/login" -d '{"name":"Alex","pin":"4821"}' | grep
 ck $? "SSO off: /api/login still issues a token (PIN sign-in unaffected)"
 curl -s "localhost:$PORT_B/api/health" | grep -q '"status":"ok"'
 ck $? "SSO off: the instance is otherwise the app it always was"
+
+# ── H1.x: two doors, two locks ──────────────────────────────────────────────
+echo "==> instance roster lock ON: /api/sso still mints (the portal cookie outranks the PIN lock)"
+J -X POST "localhost:$PORT_A/api/admin/roster-lock" -H "X-Admin-Key: $AKEY" -d '{"locked":true}' | grep -q '"locked":true'
+ck $? "instance A: roster lock turned on"
+[ "$(count users Alex)" = 0 ]; ck $? "Alex still has no users row on A (an SSO-only member)"
+SSO2="$(curl -s -H "Cookie: fam_sso=$COOKIE" "localhost:$PORT_A/api/sso")"
+printf '%s' "$SSO2" | grep -q '"ok":true'; ck $? "locked instance: GET /api/sso with the cookie is still ok:true"
+TOK2="$(printf '%s' "$SSO2" | sed 's/.*"token":"\([a-f0-9]*\)".*/\1/')"
+curl -s -H "X-Auth-Token: $TOK2" "localhost:$PORT_A/api/me" | grep -q '"name":"Alex"'
+ck $? "…and the minted token authenticates as Alex"
+[ "$(code -X POST -H 'Content-Type: application/json' -d '{"name":"Alex","pin":"4821"}' "localhost:$PORT_A/api/login")" = 401 ]
+ck $? "…while the PIN door on the same instance refuses the unclaimed name (the lock is real)"
+curl -s "localhost:$PORT_A/api/users" | grep -q '"locked":true'
+ck $? "locked instance: /api/users reports locked:true"
+
+echo "==> portal lock OFF: /api/config keeps the claimed distinction"
+CFG0="$(curl -s "localhost:$PORT_P/api/config")"
+printf '%s' "$CFG0" | grep -q '"locked":false'; ck $? "portal /api/config surfaces locked:false"
+printf '%s' "$CFG0" | grep -q '"Alex"' && printf '%s' "$CFG0" | grep -q '"Morgan"' \
+  && ! printf '%s' "$CFG0" | sed 's/.*"registered"://' | grep -q '"Jordan"'
+ck $? "…and registered lists the claimed names (Alex, Morgan), not an unclaimed one (Jordan)"
+
+echo "==> portal lock ON (FAMILY_ROSTER_LOCKED=1)"
+kill "$PID_P" 2>/dev/null; sleep 1; PID_P=""
+cd "$P"; PORT=$PORT_P FAMILY_SSO_SECRET="$SECRET" FAMILY_NAMES="$PORTAL_NAMES" FAMILY_ROSTER_LOCKED=1 \
+  TRIPS_DIR="$TMP/no-such-trips-dir" node server.js > server2.log 2>&1 &
+PID_P=$!
+cd "$TMP"
+up $PORT_P; ck $? "portal restarted with FAMILY_ROSTER_LOCKED=1"
+CFG1="$(curl -s "localhost:$PORT_P/api/config")"
+printf '%s' "$CFG1" | grep -q '"locked":true'; ck $? "portal /api/config surfaces locked:true"
+printf '%s' "$CFG1" | sed 's/.*"registered"://' | grep -q '"Jordan"'
+ck $? "…and registered no longer distinguishes claimed from unclaimed (Jordan listed)"
+J -i -X POST "localhost:$PORT_P/api/portal/login" -d '{"name":"Alex","pin":"4821"}' | grep -qi 'set-cookie: fam_sso='
+ck $? "locked portal: an already-claimed user (Alex) still signs in and gets a cookie"
+RJ="$(J -X POST "localhost:$PORT_P/api/portal/login" -d '{"name":"Jordan","pin":"2468"}')"
+printf '%s' "$RJ" | grep -q '"error":"Incorrect PIN"'; ck $? "locked portal: a first-claim (Jordan) is refused with the wrong-PIN answer"
+[ "$(countp users Jordan)" = 0 ]; ck $? "…and no portal row was written for Jordan"
+
+echo "==> portal reset-under-lock: tools/portal-reset-pin.js re-opens ONE name"
+(cd "$ROOT" && node tools/portal-reset-pin.js Morgan --db "$P/data.db") | grep -q 'Cleared'
+ck $? "portal-reset-pin cleared Morgan's PIN (portal still locked)"
+J -X POST "localhost:$PORT_P/api/portal/login" -d '{"name":"Morgan","pin":"9753"}' | grep -q '"firstTime":true'
+ck $? "locked portal: Morgan re-claims with a NEW PIN (firstTime:true)"
+J -X POST "localhost:$PORT_P/api/portal/login" -d '{"name":"Morgan","pin":"9753"}' | grep -q '"firstTime":false'
+ck $? "…and signs in again with it"
+J -X POST "localhost:$PORT_P/api/portal/login" -d '{"name":"Morgan","pin":"1357"}' | grep -q '"error":"Incorrect PIN"'
+ck $? "…the old PIN is dead and the re-claim was consumed"
+J -X POST "localhost:$PORT_P/api/portal/login" -d '{"name":"Riley","pin":"1111"}' | grep -q '"error":"Incorrect PIN"'
+ck $? "…while a different unclaimed name (Riley) stays locked out"
 
 echo
 echo "== sso-rehearsal summary =="
