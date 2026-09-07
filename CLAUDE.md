@@ -108,7 +108,7 @@ upgrade runbooks (Node 24, Express 5) are under `docs/maintenance/`.
   server work ever during an autonomous run.
 
 - Session reports and any artifact that quotes live URLs, server IPs, or real family
-  names are written **outside the repo**, to `~/code/_archive/trip-dashboard-template/`
+  names are written **outside the repo**, to `~/code/_archive/trip-dashboard/`
   (e.g. `OVERNIGHT_REPORT_<n>.md`). That archive directory is the only permitted write
   location outside the repo during an autonomous run; the repo working tree stays
   **audit-clean** at all times — never park such content here "temporarily".

@@ -29,7 +29,38 @@ The instance table (first three columns mirror `deploy/instances.conf`, which
 | trip-a | /var/www/trips/trip-a   | 3001 | trip-a.trips.example.com   | trip-a      |
 | trip-b | /var/www/trips/trip-b   | 3002 | trip-b.trips.example.com   | trip-b      |
 
-## ADD-A-TRIP — bring up a new instance
+## ONE-COMMAND STAND-UP — `deploy/new-trip.sh` (the headline path)
+
+From the laptop, repo clean and on `main`, with `deploy/deploy.local.env` carrying
+`SERVER`, `SSH_KEY`, `PUBLIC_SUFFIX` and `CERT_EMAIL` (see the `.example`;
+`PORT_BAND_MIN`/`PORT_BAND_MAX` and `PORT_RESERVED` are optional):
+
+    deploy/new-trip.sh trip-c --dry-run                 # the plan: port, hostname, every command — changes NOTHING
+    deploy/new-trip.sh trip-c --yes [--trip-json PATH]  # the real run (without --yes it prints the plan and asks)
+
+It assembles the manual recipe below and refuses, loudly and before the first write,
+if any preflight fails: clean tree on `main` (deploy.sh ships the working tree); name
+valid and unused (conf row, remote dir, pm2 process, nginx site or `server_name`,
+cert); port free (lowest in the band unless `--port`; reserved ports are never
+chosen); DNS already pointing at the droplet (it prints the exact A record otherwise —
+a certbot failure mid-run is the messiest outcome); trip JSON validates
+(`--data-only`, warnings shown, never blocking). Then, in order: app dir →
+`new-env.sh` (+`PORT`, `CORS_ORIGIN`; `ADMIN_KEY` stays empty for `sync-admin-key.sh`)
+→ `ecosystem.config.js` copied wholesale from the template with `NAME` set → row
+appended to `deploy/instances.local.conf` → **`deploy.sh` twice**: pass 1 lands the
+code + `npm install` and its `pm2 restart` fails on purpose (no process yet);
+`[apply-trip-data.js]`; `pm2 start ecosystem.config.js && pm2 save` — by FILE; pass 2
+restarts and runs the version-checked health gate → nginx ACME stub (`nginx -t`
+before every reload; a failed test removes the site again) → `certbot certonly
+--webroot` → the full HTTPS site → verify: local health + version,
+`Access-Control-Allow-Origin` pinned to the new origin (proves `.env` → ecosystem
+allowlist → process), HTTPS health + version, `/api/sso` 404 (no SSO secret yet). It
+never runs against an existing instance, so `apply-trip-data.js` is first-deploy-only
+by construction. `--help` is the full contract; `tools/new-trip-rehearsal.sh` proves
+all of it without a droplet. On failure it prints what was already done and the
+unwind commands — the manual steps below are the debugging path.
+
+## ADD-A-TRIP — what new-trip.sh does, and how to do it by hand if something breaks
 
 Prereqs: a droplet provisioned once via `deploy/provision.sh` (node, pm2, nginx,
 certbot). Pick the next free port (here: `3003`, name `trip-c`,
@@ -61,6 +92,11 @@ domain `trip-c.trips.example.com`).
    then on the droplet
    `cd /var/www/trips/trip-c && npm install --omit=dev && node tools/apply-trip-data.js <trip>.json`
    (the apply tool validates, injects the trip, patches the name lists).
+   **Prefer `deploy/deploy.sh trip-c` for the code** (it needs the step-9 row first;
+   on a first deploy its `pm2 restart` fails because the process does not exist yet —
+   expected; run it again after step 7). An ad-hoc `tar` of a working tree once
+   shipped the repo's sample `data.db` onto a live instance; `git archive` of a tag
+   avoids that, `deploy.sh` avoids it by contract.
    *Rollback: same as step 4 — still no live data.*
 
 6. **Environment**: `bash deploy/new-env.sh /var/www/trips/trip-c` (writes the

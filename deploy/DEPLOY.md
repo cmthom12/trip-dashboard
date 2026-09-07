@@ -9,6 +9,14 @@ deploy.sh      (from your laptop)      -> pushes the app, starts it under PM2
 setup-https.sh (on the server)         -> gets the certificate, turns on HTTPS
 ```
 
+> **Several trips on one server?** The headline path for a NEW trip instance is one
+> command from the laptop — `deploy/new-trip.sh <name> --dry-run`, then `--yes` — see
+> `docs/MULTI_INSTANCE.md` §ONE-COMMAND STAND-UP. Note that `deploy.sh` is now
+> `deploy/deploy.sh <instance>`: it reads `deploy/instances.local.conf`, ships code only
+> (never `ecosystem.config.js`, `.env` or `data.db`) and restarts an EXISTING pm2
+> process. The single-instance walkthrough below predates that and is kept for a
+> first-ever server.
+
 ---
 
 ## Pick your certificate type first
