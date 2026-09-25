@@ -122,7 +122,8 @@ Leaving it out means "we do not know", which the app shows as "not checked" — 
 and completely acceptable answer. A GUESS is the worst thing you can produce here: it
 looks identical to a fact and nobody can tell them apart later. If you find yourself
 reasoning "an Italian place probably has gluten-free pasta" — stop, and omit the key.
-Set "source" to where the claim actually came from, and "verified" to the date you read it.
+Set "source" to where the claim actually came from, and "verified" to the date you read it
+("YYYY-MM-DD", or just "YYYY-MM" when you only know the month — never invent a day).
 
 And never remove, downgrade or skip a great venue on dietary grounds. Include it, and put
 whatever is worth knowing in "practical" so people can choose for themselves.
@@ -155,7 +156,7 @@ ACTIVITY: { "id","name","cat"(a categories key),"dur":"~2 hrs","durM":120(int mi
             "cost":"$$","costN":2(int 0-4),"safe":true,"top":true/false,"who":["Name",...],
             "desc","practical","link":"","ll":[lat,lng](optional),"tags":["..."],
             "start":"HH:MM"(optional, 24-hour),
-            "dietary": {"accommodates":[tag],"unsuitable":[tag],"verified":"YYYY-MM-DD",
+            "dietary": {"accommodates":[tag],"unsuitable":[tag],"verified":"YYYY-MM-DD"|"YYYY-MM",
                         "source":"menu"|"site"|"call"|"review"|"unverified","note"}
                         (OPTIONAL - food places only, and only if you can SOURCE it) }
 mustDos: [ { "location" (matches a day's "location"), "emoji",
@@ -177,6 +178,9 @@ enrichments: {
   "phrases":  { "day1": {"flag":"🇮🇹","gr":"phrase in the LOCAL language","en":"English meaning",
                           "say":"phonetic pronunciation"}, "day2": {...}, ... (one per day id) },
   "facts":    { "day1":"a neat fact about that day's destination", "day2":"...", ... (one per day id) } }
+  (Include all three maps — use {} for one you have nothing for. On app v0.23.0 and earlier a
+   trip missing any of the three renders a blank page; from v0.23.1 a missing map just hides
+   that card.)
 
 === WORKED EXAMPLE OF THE mustDos BLOCK ===
 Two stopping locations, trimmed to 2 items each so you can see the shape. Yours gets

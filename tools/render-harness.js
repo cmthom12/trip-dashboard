@@ -224,7 +224,25 @@ if (require.main === module && process.env.TRIP_EMIT_POPUPS === '1') {
   }, 50);
 }
 
-if (require.main === module && process.env.TRIP_EMIT_POPUPS !== '1') {
+// ── child mode: render every day's MissionCard + PhraseCard, emit what threw ──
+// Used by the enrichments checks below. If the app script itself throws while
+// loading (e.g. a trip with no enrichments block at all on old code), the
+// require above already failed and this child exits non-zero.
+if (require.main === module && process.env.TRIP_EMIT_CARDS === '1') {
+  const X = sandbox.__X, errors = [], texts = {};
+  let rendered = 0;
+  for (const day of (X.DAYS || [])) {
+    texts[day.id] = {};
+    for (const name of ['MissionCard', 'PhraseCard']) {
+      if (typeof X[name] !== 'function') { errors.push(name + ' missing'); continue; }
+      try { texts[day.id][name] = text(X[name]({ day })); rendered++; } catch (e) { errors.push(name + ' ' + day.id + ': ' + e.message); }
+    }
+  }
+  process.stdout.write(JSON.stringify({ rendered, errors, texts }));
+  process.exit(0);
+}
+
+if (require.main === module && process.env.TRIP_EMIT_POPUPS !== '1' && process.env.TRIP_EMIT_CARDS !== '1') {
   const X = sandbox.__X;
   console.log('root      ' + ROOT);
   console.log('trip      ' + (X.TRIP && X.TRIP.trip && X.TRIP.trip.title));
@@ -361,15 +379,119 @@ if (require.main === module && process.env.TRIP_EMIT_POPUPS !== '1') {
   // The override for `false` lands on Login's first useState(false), which is
   // rosterLocked on this branch (and busy on older code — which then still
   // renders the claimed chrome, so the locked check fails there).
+  // The "registered" override names the loaded trip's FIRST traveler (it used
+  // to hard-code the sample's 'Alex', so every real roster failed this check).
+  const firstName = (X.FAMILY || [])[0] || 'Alex';
   if (typeof X.Login === 'function') {
-    React.__stateOverrides = [{ init: [], value: ['Alex'] }];
+    React.__stateOverrides = [{ init: [], value: [firstName] }];
     let lt = text(X.Login({ onLogin() {} }));
     ck('unlocked sign-in shows the claimed/unclaimed chrome (has PIN / set PIN)', lt.includes('has PIN') && lt.includes('set PIN'));
-    React.__stateOverrides = [{ init: [], value: ['Alex'] }, { init: false, value: true }];
+    React.__stateOverrides = [{ init: [], value: [firstName] }, { init: false, value: true }];
     lt = text(X.Login({ onLogin() {} }));
     ck('locked sign-in shows the same neutral "Enter PIN" for every name', lt.includes('Enter PIN') && !lt.includes('has PIN') && !lt.includes('set PIN'));
     React.__stateOverrides = [];
   } else ck('Login exists', false);
+
+  // v0.23.1 — enrichments are optional. A trip without enrichments.facts
+  // rendered a BLANK page (PhraseCard did Object.keys(undefined)); one with no
+  // enrichments block at all failed before the first render. Each variant of
+  // the loaded trip is rendered in a child (one process = one trip).
+  // Children get a clean copy of the env: a TRIP_* flag exported in the
+  // caller's shell must not switch a child into the wrong mode.
+  const childEnv = extra => {
+    const e = Object.assign({}, process.env);
+    delete e.TRIP_EMIT_CARDS; delete e.TRIP_EMIT_POPUPS; delete e.TRIP_NESTED; delete e.TRIP_LIVE_ROWS;
+    return Object.assign(e, extra);
+  };
+  const renderCards = trip => {
+    const t = fs.mkdtempSync(path.join(os.tmpdir(), 'render-harness-'));
+    try {
+      const f = path.join(t, 'trip.json');
+      fs.writeFileSync(f, JSON.stringify(trip));
+      const r = cp.spawnSync(process.execPath, [__filename, f, ROOT], {
+        env: childEnv({ TRIP_EMIT_CARDS: '1' }), encoding: 'utf8', timeout: 60000
+      });
+      if (r.status !== 0) return { loaded: false, rendered: 0, errors: [String(r.stderr || '').split('\n').find(l => /Error/.test(l)) || 'child exited ' + r.status] };
+      return Object.assign({ loaded: true }, JSON.parse(r.stdout));
+    } catch (e) { return { loaded: false, rendered: 0, errors: [e.message] }; }
+    finally { try { fs.rmSync(t, { recursive: true, force: true }); } catch (e) {} }
+  };
+  const dayCount = (X.DAYS || []).length;
+  const variants = [
+    ['no enrichments.facts', tr => { if (tr.enrichments) delete tr.enrichments.facts; }],
+    ['enrichments = {}', tr => { tr.enrichments = {}; }],
+    ['no enrichments key at all', tr => { delete tr.enrichments; }]
+  ];
+  for (const [label, mutate] of variants) {
+    const tr = JSON.parse(JSON.stringify(X.TRIP));
+    mutate(tr);
+    const res = renderCards(tr);
+    ck('trip with ' + label + ': app loads and every day\'s Mission + Phrase card renders without throwing' +
+      (res.errors.length ? ' [' + res.errors[0] + ']' : ''),
+      res.loaded && res.errors.length === 0 && res.rendered === dayCount * 2);
+  }
+
+  // …and the cards still SHOW their content (not just "did not throw"): on the
+  // loaded trip, each day's mission text, phrase and a fact reach the screen.
+  const enr = (X.TRIP && X.TRIP.enrichments) || {};
+  const factVals = Object.values(enr.facts || {}).map(String);
+  let shown = 0, missing = [];
+  for (const day of (X.DAYS || [])) {
+    const mt = typeof X.MissionCard === 'function' ? text(X.MissionCard({ day }) || '') : '';
+    const pt = typeof X.PhraseCard === 'function' ? text(X.PhraseCard({ day }) || '') : '';
+    const m = enr.missions && enr.missions[day.id], ph = enr.phrases && enr.phrases[day.id];
+    if (m) { if (mt.includes(String(m))) shown++; else missing.push(day.id + ' mission'); }
+    if (ph && ph.gr) { if (pt.includes(String(ph.gr))) shown++; else missing.push(day.id + ' phrase'); }
+    if (factVals.length) { if (factVals.some(f => pt.includes(f))) shown++; else missing.push(day.id + ' fact'); }
+  }
+  ck('loaded trip: every day\'s mission, phrase and a fact are actually shown' + (missing.length ? ' [missing: ' + missing.slice(0, 3).join(', ') + ']' : ''),
+    missing.length === 0 && shown > 0);
+
+  // facts as a plain array is validator-approved and must keep rendering.
+  if (factVals.length) {
+    const tr = JSON.parse(JSON.stringify(X.TRIP));
+    tr.enrichments.facts = factVals.slice();
+    const res = renderCards(tr);
+    const days = Object.values(res.texts || {});
+    ck('trip with enrichments.facts as an ARRAY: every day still shows one of those facts',
+      res.loaded && res.errors.length === 0 && days.length === dayCount &&
+      days.every(t => factVals.some(f => String(t.PhraseCard || '').includes(f))));
+  }
+
+  // v0.23.1 — the whole harness must pass on a real-shaped roster, not only on
+  // the sample's names. Rename every traveler (synthetic replacements) and run
+  // the full suite on it in a child. TRIP_NESTED stops that child recursing.
+  if (process.env.TRIP_NESTED !== '1') {
+    const orig = X.FAMILY || [];
+    const pool = ['Morgan', 'Taylor', 'Quinn', 'Avery', 'Parker', 'Reese', 'Rowan', 'Emery']
+      .filter(n => !orig.includes(n));
+    const map = new Map(orig.map((n, i) => [n, (pool[i % pool.length] || 'Traveler') + (i >= pool.length ? String(i) : '')]));
+    const esc = n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // ONE pass (so a replacement is never renamed again), longest names first,
+    // and word edges that understand non-ASCII letters.
+    const alt = [...map.keys()].sort((a, b) => b.length - a.length).map(esc).join('|');
+    let js = JSON.stringify(X.TRIP);
+    if (alt) js = js.replace(new RegExp('(?<![\\p{L}\\p{N}_])(' + alt + ')(?![\\p{L}\\p{N}_])', 'gu'), n => map.get(n));
+    const renamedFam = (JSON.parse(js).family || []).map(f => f.name);
+    const renameOk = renamedFam.length === orig.length && new Set(renamedFam).size === renamedFam.length &&
+      renamedFam.every(n => !orig.includes(n));
+    const t = fs.mkdtempSync(path.join(os.tmpdir(), 'render-harness-'));
+    let nestedOut = '';
+    try {
+      const f = path.join(t, 'renamed.json');
+      fs.writeFileSync(f, js);
+      const r = cp.spawnSync(process.execPath, [__filename, f, ROOT], {
+        env: childEnv({ TRIP_NESTED: '1' }), encoding: 'utf8', timeout: 180000
+      });
+      nestedOut = String(r.stdout || '');
+    } catch (e) { nestedOut = ''; } finally { try { fs.rmSync(t, { recursive: true, force: true }); } catch (e) {} }
+    const m = nestedOut.match(/RESULT: (\d+) PASS, (\d+) FAIL/);
+    const failed = nestedOut.split('\n').filter(l => l.startsWith('FAIL')).map(l => l.slice(6));
+    ck('full harness passes on a renamed roster (every traveler renamed, all names distinct)' +
+      (renameOk ? '' : ' [rename did not produce a distinct, fully-renamed roster]') +
+      (failed.length ? ' [failed: ' + failed[0] + ']' : ''),
+      renameOk && !!m && +m[2] === 0 && +m[1] > 0);
+  }
 
   // H5 / H5.1 — a flush that hits a dead session must put the queue back
   // untouched, whether or not a (stale) token is still stored; a login must

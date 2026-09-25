@@ -31,6 +31,12 @@ function validateTripData(d) {
   const isObj = x => x && typeof x === 'object' && !Array.isArray(x);
   const isLL  = x => Array.isArray(x) && x.length === 2 && isNum(x[0]) && isNum(x[1]);
   const ISO   = /^\d{4}-\d{2}-\d{2}$/;
+  // dietary.verified: a full date, or a month when that is all anyone knows
+  // ("checked the menu in Sep 2026" is honest; inventing a day is not).
+  const VERIFIED = v => {
+    const m = /^(\d{4})-(\d{2})(?:-(\d{2}))?$/.exec(String(v));
+    return !!m && +m[2] >= 1 && +m[2] <= 12 && (m[3] === undefined || (+m[3] >= 1 && +m[3] <= 31));
+  };
 
   // ── dietary (optional, additive; WARNINGS only) ────────────────────────────
   // IgG-style food SENSITIVITIES, not allergies — delayed, comfort-level
@@ -89,8 +95,8 @@ function validateTripData(d) {
       warn(label + ': dietary lists ' + both.join(', ') + ' as BOTH accommodates and unsuitable. The app reads "unsuitable" first, so the accommodates entry is ignored — delete whichever one is wrong');
     if (v.source !== undefined && (!isStr(v.source) || !DIET_SOURCES.includes(v.source)))
       warn(label + ': dietary."source" should be one of: ' + DIET_SOURCES.join(', ') + ' (got ' + JSON.stringify(v.source) + ')');
-    if (v.verified !== undefined && !ISO.test(String(v.verified)))
-      warn(label + ': dietary."verified" should be a date like "2026-08-11" (got ' + JSON.stringify(v.verified) + ')');
+    if (v.verified !== undefined && !VERIFIED(v.verified))
+      warn(label + ': dietary."verified" should be a date like "2026-08-11" or a month like "2026-08" (got ' + JSON.stringify(v.verified) + ')');
     if (v.note !== undefined && !isStr(v.note)) warn(label + ': dietary."note" should be a one-line string (or leave it out)');
     if ((acc.length || uns.length) && v.source === undefined)
       warn(label + ': dietary makes a claim about the venue with no "source". Say where it came from (' + DIET_SOURCES.join(', ') + ') — a claim nobody can trace is one nobody should act on');
@@ -261,6 +267,7 @@ function validateTripData(d) {
   // ── enrichments ────────────────────────────────────────────────────────────
   const en = isObj(d.enrichments) ? d.enrichments : (err('"enrichments" must be an object'), {});
   const dayKeyed = (v, name, what) => {
+    if (v === undefined) { warn('enrichments.' + name + ' is missing — ' + what + '. On app v0.23.0 and earlier a missing enrichments map renders a BLANK PAGE, so add "' + name + '": {} while any instance still runs those versions'); return false; }
     if (Array.isArray(v)) { warn('enrichments.' + name + ' is an array — the app looks entries up BY DAY ID, so ' + what + '. Use {"day1": …, "day2": …}'); return false; }
     if (!isObj(v)) { warn('enrichments.' + name + ' should be an object keyed by day id'); return false; }
     for (const k of Object.keys(v)) if (!dayIds.includes(k)) warn('enrichments.' + name + '.' + k + ' matches no day id');
@@ -272,7 +279,10 @@ function validateTripData(d) {
       if (!isObj(p) || !isStr(p.gr) || !isStr(p.en)) warn('enrichments.phrases.' + k + ' should be {flag, gr (local phrase), en (English), say (pronunciation)}');
     }
   }
-  if (Array.isArray(en.facts)) warn('enrichments.facts is an array — facts still display, but keying them by day id ("day1": …) pins each fact to its day');
+  if (en.facts === undefined)
+    warn('enrichments.facts is missing — no "did you know" line will show. On app v0.23.0 and earlier a missing enrichments map renders a BLANK PAGE, so add "facts": {} (or real facts keyed by day id) while any instance still runs those versions');
+  else if (Array.isArray(en.facts)) warn('enrichments.facts is an array — facts still display, but keying them by day id ("day1": …) pins each fact to its day');
+  else if (!isObj(en.facts)) warn('enrichments.facts should be an object keyed by day id (or an array) — anything else shows no facts');
 
   // ── packing (optional quick-start template override) ───────────────────────
   if ('packing' in d) {

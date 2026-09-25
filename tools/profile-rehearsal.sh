@@ -142,7 +142,7 @@ const trip = {
   title: 'Rehearsal Trip',
   family: [
     { name: 'Alex',   interests: ['food', 'markets'] },
-    { name: 'Sam',    interests: ['hiking', 'opera'] },
+    { name: 'Sam',    interests: ['hiking', 'opera'], dietary: [{ tag: 'gluten', level: 'avoids' }] },
     { name: 'Jordan', interests: ['museums'] },
     { name: 'Riley',  interests: ['beaches'] }
   ],
@@ -292,6 +292,54 @@ blk ALEX | grep -q 'Saturday Market'
 ck $? "3-star vote listed under Must-do for its voter"
 blk JORDAN | grep -q 'Harbor walking tour'
 ck $? "authored suggestion listed under its author"
+
+# ── block structure: every header belongs to its own content ─────────────────
+# Sep 2026 field report: in a combined harvest file, blocks appeared under the
+# PREVIOUS traveler's header. This exporter builds header, PROMPT LINE and
+# DIETARY from the same family[] entry, so that shift cannot come from here —
+# this check pins that down, on a roster with a zero-vote traveler in the
+# middle and a stray voter, so any future change that breaks it fails loudly.
+cat > "$TMP/structure.js" <<'JS'
+const fs = require('fs');
+const mode = process.argv[2];            // 'headers' | 'dietary'
+const lines = fs.readFileSync(process.argv[3], 'utf8').split('\n');
+const expected = process.argv.slice(4);
+const RULE = '='.repeat(80);
+const blocks = [];
+for (let i = 0; i + 2 < lines.length; i++) {
+  if (lines[i] === RULE && lines[i + 2] === RULE && lines[i + 1] !== 'FAMILY-LEVEL NOTES (auto-computed)') {
+    let j = i + 3; const body = [];
+    while (j < lines.length && lines[j] !== RULE) body.push(lines[j++]);
+    blocks.push({ header: lines[i + 1], body });
+    i = j - 1;
+  }
+}
+const bad = [];
+if (!blocks.length) bad.push('no traveler blocks found');
+if (mode === 'headers') {
+  const headers = blocks.map(b => b.header);
+  if (headers.join(',') !== expected.map(n => n.toUpperCase()).join(','))
+    bad.push('headers ' + headers.join(',') + ' != roster order ' + expected.join(','));
+  for (const b of blocks) {
+    const pl = b.body[b.body.indexOf('PROMPT LINE (copy-paste):') + 1] || '';
+    const who = pl.split(' — ')[0];
+    if (who.toUpperCase() !== b.header) bad.push(b.header + ' block has PROMPT LINE for ' + JSON.stringify(who));
+  }
+} else if (mode === 'dietary') {
+  // the dietary line must sit in the block whose PROMPT LINE names its owner
+  for (const b of blocks) {
+    const pl = b.body[b.body.indexOf('PROMPT LINE (copy-paste):') + 1] || '';
+    const who = pl.split(' — ')[0];
+    const hasDiet = b.body.some(l => l.startsWith('DIETARY'));
+    if (hasDiet !== (who === 'Sam')) bad.push(JSON.stringify(who) + (hasDiet ? ' carries' : ' lacks') + ' a DIETARY section');
+  }
+} else bad.push('unknown mode ' + mode);
+if (bad.length) { console.error(bad.join('\n')); process.exit(1); }
+JS
+node "$TMP/structure.js" headers "$OUT" Alex Sam Jordan Riley
+ck $? "every block: header == PROMPT LINE name, roster order, each traveler once"
+node "$TMP/structure.js" dietary "$OUT" Alex Sam Jordan Riley
+ck $? "DIETARY lines appear only in their owner's block"
 
 # ── a voter no longer in family[] ────────────────────────────────────────────
 grep -q "Votes from names not in family\[\]: Casey" "$ERR"

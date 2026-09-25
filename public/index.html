@@ -3925,7 +3925,12 @@ function Countdown() {
     }
   }, icon, " ", text);
 }
-const MISSIONS = TRIP.enrichments.missions;
+// enrichments and each of its maps are optional: a trip without them simply
+// shows no Mission / Phrase / Fact card. Reading them unguarded blanked the
+// whole page when a trip shipped without enrichments.facts (fixed in v0.23.1).
+const _ENRICH = TRIP.enrichments && typeof TRIP.enrichments === "object" ? TRIP.enrichments : {};
+const _encMap = v => v && typeof v === "object" && !Array.isArray(v) ? v : {};
+const MISSIONS = _encMap(_ENRICH.missions);
 function _dayDate(id) {
   const dc = DAY_COORDS && DAY_COORDS[id];
   if (dc && dc.date) {
@@ -3982,8 +3987,9 @@ function MissionCard({
     }
   }, m));
 }
-const PHRASES = TRIP.enrichments.phrases;
-const FACTS = TRIP.enrichments.facts;
+const PHRASES = _encMap(_ENRICH.phrases);
+// facts may also be a plain array (validator-approved): keep rotating through it.
+const FACTS = Array.isArray(_ENRICH.facts) ? Object.assign({}, _ENRICH.facts) : _encMap(_ENRICH.facts);
 function PhraseCard({
   day
 }) {
