@@ -226,7 +226,9 @@ h2{font-size:14px;color:#0D2B4E;margin:18px 0 8px}
 
   $('tripImportBtn').addEventListener('click', function () {
     if (!validatedTrip) return;
-    fetch('/api/trip').then(function (r) { return r.ok ? r.json() : null; }).catch(function () { return null; }).then(function (cur) {
+    // v0.24.0: the full trip needs a reader — send the admin key, else this
+    // comparison would only see the anonymous summary (no days, no ids).
+    fetch('/api/trip', { headers: { 'X-Admin-Key': key() } }).then(function (r) { return r.ok ? r.json() : null; }).catch(function () { return null; }).then(function (cur) {
       var lines = ['Import "' + ((validatedTrip.trip || {}).title || '?') + '" and replace the current trip for EVERYONE?', '',
         'PINs and votes are kept for travelers whose names stay the same. Names not in the new trip can no longer sign in.',
         'Votes follow activity and must-do IDS, not titles: renaming or editing an item keeps its stars as long as its id is unchanged; an item whose id changes loses them.'];
@@ -280,12 +282,19 @@ h2{font-size:14px;color:#0D2B4E;margin:18px 0 8px}
   }
 
   $('tripExportBtn').addEventListener('click', function () {
-    var a = document.createElement('a');
-    a.href = '/api/trip/export';
-    a.download = 'trip-data.json';
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
+    // v0.24.0: export needs a reader, and a plain link cannot send the admin
+    // key — fetch it with the key, then hand the browser the file.
+    fetch('/api/trip/export', { headers: { 'X-Admin-Key': key() } }).then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.blob();
+    }).then(function (b) {
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(b);
+      a.download = 'trip-data.json';
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+    }).catch(function (e) { flash('Export failed — ' + ((e && e.message) || 'try again'), true); });
   });
 
   function load() {

@@ -309,9 +309,12 @@ type `my-trip.json` as the name. (If Windows saved it as `my-trip.json.txt`, ren
 
 The tool checks the JSON first and refuses politely if something's wrong — paste any ✗ lines
 back to your AI, save the corrected JSON, and run it again (**running it twice is safe**).
-When it goes through, it backs up the two files it touches (`*.backup-<timestamp>`), installs
-the trip data, updates **all four traveler-name lists** for you — and, if the dashboard has
-run before (a `data.db` exists), **installs the trip straight into that database too**, the
+When it goes through, it saves your trip as **`trip-seed.json`** next to `server.js` (backing
+up any earlier one as `trip-seed.json.backup-<timestamp>`). That file sits **outside
+`public/`** on purpose: everything in `public/` is handed to anyone who asks for it, and your
+trip is for signed-in travelers only. `public/index.html` keeps the built-in sample, and the
+traveler-name lists come from your trip automatically. If the dashboard has
+run before (a `data.db` exists), the tool also **installs the trip straight into that database**, the
 same versioned import the admin page uses. Existing PINs, votes and lists are kept; just
 restart the dashboard to see the new trip. Only if the database can't be written right then
 (usually because the dashboard is still running and holds it locked) does the tool print a
@@ -338,13 +341,16 @@ Two quirks worth knowing on first run:
 <details>
 <summary><b>Advanced: install it by hand instead</b> (what the tool does, as manual edits)</summary>
 
-**A. Paste the trip data.** Open `public/index.html` in any text editor. Find this line
-(it's near the top):
-```html
-<script type="application/json" id="trip-data">
-```
-Select **everything between** that opening tag and the matching `</script>` and replace it
-with the JSON the AI gave you. Save.
+**A. Save the trip data as `trip-seed.json`** in the app folder, next to `server.js` (not
+inside `public/`). On the first start with no `data.db`, the dashboard loads its trip from
+that file. Already have a `data.db`? Use the admin page's Trip Setup import instead.
+
+> Don't paste your trip into the `trip-data` block in `public/index.html` (older guides said
+> to). Since v0.24.0 that block only holds the sample. Anything in `public/` can be downloaded
+> by anyone who knows the address, sign-in or not.
+
+Steps B and C below only matter on copies older than v0.6.0. Newer copies take the traveler
+names and the timezone (the trip's `"tz"` key) from the trip itself.
 
 **B. Update the traveler lists (three spots, two files).** Set every list to your traveler
 names — spelled **exactly** like the `name` fields in your trip:
@@ -374,23 +380,21 @@ and change it to yours (e.g. `"America/Chicago"`, `"Europe/Rome"`).
 
 ---
 
-## The four places names must match
-**If you used `Apply-Trip.bat` / `apply-trip-data.js` above, this is already handled — the
-tool sets all four from your JSON.** For the curious (and the hand-editors):
-every traveler name has to be **identical** in all four —
-1. each `"name"` in **`family`** (in `public/index.html`),
-2. **`ALLOWED`** in `server.js`,
-3. **`PLANNERS`** in `server.js`,
-4. **`PLANNERS`** in `public/index.html` (just below the trip-data block).
-If a name is misspelled in 1–3, that person can't log in; if it's misspelled in 4, they can
-log in but the Day-Plan edit buttons never appear for them. That's the #1 gotcha.
+## The four places names must match (older copies only)
+**Since v0.6.0 this is automatic:** who can sign in and who can edit the Day Plan come from
+the trip itself (`family`, plus the optional `planners` list). Nothing else needs editing.
+On copies older than v0.6.0 every traveler name had to be **identical** in four places —
+each `"name"` in `family`, `ALLOWED` and `PLANNERS` in `server.js`, and `PLANNERS` in
+`public/index.html`. A misspelling meant that person couldn't sign in (or never saw the
+Day-Plan edit buttons).
+
 
 ## The checker — your accept/reject test on the AI's work
 The install tool already runs this for you, before and after installing. Run it yourself the
 moment the AI hands you the JSON, before you do anything else:
 ```
 node tools/validate-trip-data.js my-trip.json      # the AI's raw output
-node tools/validate-trip-data.js public/index.html # or after pasting
+node tools/validate-trip-data.js trip-seed.json    # what the install tool saved
 ```
 It prints plain-English lines:
 

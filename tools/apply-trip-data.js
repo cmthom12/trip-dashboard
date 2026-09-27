@@ -2,7 +2,13 @@
 /*
  * apply-trip-data.js — install an AI-generated trip JSON into the app, safely.
  *
- * Does everything BUILD_WITH_AI.md Step 3 describes, automatically:
+ * v0.24.0+ trees (server.js seeds from trip-seed.json): the trip is written to
+ * trip-seed.json NEXT TO server.js — outside public/, so it is never a static
+ * file anyone can download — and public/index.html keeps the synthetic sample.
+ * No other file is touched; the name lists come from the trip itself. Steps 1,
+ * 5 (the "tz" key) and 7 below still apply.
+ *
+ * Older trees — does everything BUILD_WITH_AI.md Step 3 describes, automatically:
  *   1. validates the JSON (same checks as tools/validate-trip-data.js),
  *   2. backs up public/index.html and server.js to *.backup-<timestamp>,
  *   3. injects the JSON between the trip-data <script> tags,
@@ -34,6 +40,7 @@ const ROOT = path.join(__dirname, '..');
 const HTML_PATH = path.join(ROOT, 'public', 'index.html');
 const SERVER_PATH = path.join(ROOT, 'server.js');
 const VALIDATOR = path.join(__dirname, 'validate-trip-data.js');
+const SEED_PATH = path.join(ROOT, 'trip-seed.json');
 
 const fail = m => { console.log('✗ ' + m); process.exit(1); };
 
@@ -91,6 +98,42 @@ let html, server;
 try { html = fs.readFileSync(HTML_PATH, 'utf8'); } catch (e) { fail('Cannot read ' + HTML_PATH + ' — run this from the app folder (' + e.message + ')'); }
 try { server = fs.readFileSync(SERVER_PATH, 'utf8'); } catch (e) { fail('Cannot read ' + SERVER_PATH + ' (' + e.message + ')'); }
 
+const stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
+
+// ── v0.24.0+: the trip goes to trip-seed.json, never into public/ ────────────
+if (server.includes("'trip-seed.json'")) {
+  if (tz != null) { trip.tz = tz; jsonText = JSON.stringify(trip, null, 1); }
+  if (fs.existsSync(SEED_PATH)) {
+    fs.copyFileSync(SEED_PATH, SEED_PATH + '.backup-' + stamp);
+    console.log('✓ Backed up the previous trip-seed.json (trip-seed.json.backup-' + stamp + ')');
+  }
+  fs.writeFileSync(SEED_PATH, jsonText + '\n');
+  console.log('✓ Trip data installed into trip-seed.json (next to server.js — not in public/, so it is never served as a file)');
+  console.log('  Travelers: ' + famNames.join(', ') + (tz != null ? '   Timezone: ' + tz : ''));
+  console.log('');
+  console.log('Double-checking the installed trip …');
+  const chk = spawnSync(process.execPath, [VALIDATOR, SEED_PATH, '--data-only'], { stdio: 'inherit' });
+  console.log('');
+  if (chk.status !== 0) fail('The installed trip-seed.json did not pass the checker (see above). Fix the JSON and run this again.');
+  console.log('✅ Your trip is installed.');
+  console.log('');
+  // An older version of this tool wrote the trip INTO public/index.html. If
+  // this folder still carries one, it is a file anyone can download.
+  try {
+    const T = '<script type="application/json" id="trip-data">';
+    const iT = html.indexOf(T), inl = JSON.parse(html.slice(iT + T.length, html.indexOf('</' + 'script>', iT)));
+    const inlNames = (inl.family || []).map(f => f && f.name).join(',');
+    if (inlNames !== 'Alex,Sam,Jordan,Riley,Casey') {
+      console.log('⚠ public/index.html still holds a trip (travelers: ' + inlNames + ') from an older install.');
+      console.log('  Everything in public/ can be downloaded by anyone. Put the template\'s copy of');
+      console.log('  public/index.html back (it holds only the sample), e.g. git checkout public/index.html');
+      console.log('');
+    }
+  } catch (e) {}
+  installIntoDb();
+  process.exit(0);
+}
+
 // step 5a (prepared): where does the timezone live on this tree? Older trees
 // carry a `const DEFAULT_TZ = "..."` literal to patch; v0.6+ index.html derives
 // it from the trip's top-level "tz" key, so --tz goes into the trip JSON itself
@@ -132,7 +175,6 @@ if (tz != null && !tzInTrip) {
 }
 
 // ── step 2: back up, then write ──────────────────────────────────────────────
-const stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
 for (const p of [HTML_PATH, SERVER_PATH]) fs.copyFileSync(p, p + '.backup-' + stamp);
 console.log('✓ Backed up public/index.html and server.js (*.backup-' + stamp + ')');
 fs.writeFileSync(HTML_PATH, html);
@@ -161,45 +203,51 @@ if (post.status !== 0) {
 }
 console.log('✅ Your trip is installed into the app files.');
 console.log('');
-const DB_PATH = path.join(ROOT, 'data.db');
-if (fs.existsSync(DB_PATH)) {
-  // Since the trip_config upgrade the app reads its trip from the database,
-  // which was seeded the first time the server ran — the files patched above
-  // only feed a FRESH database. So install the trip into data.db too, through
-  // the same versioned import path the admin page uses (tools/lib/trip-store.js).
-  let r = null, dbFail = '';
-  try {
-    const Database = require(path.join(ROOT, 'node_modules', 'better-sqlite3'));
-    const { importTripConfig } = require(path.join(__dirname, 'lib', 'trip-store.js'));
-    const db = new Database(DB_PATH, { timeout: 3000 });
-    try { r = importTripConfig(db, trip, 'apply-tool'); }
-    finally { try { db.close(); } catch (e) {} }
-    if (!r.ok) dbFail = 'the trip failed the import validation: ' + r.errors.join('; ');
-  } catch (e) {
-    r = null;
-    dbFail = e.message; // e.g. SQLITE_BUSY: the running server holds the database
-  }
-  if (r && r.ok) {
-    console.log('✓ Trip installed into the database too (data.db, trip version ' + r.version + ').');
-    console.log('  Existing PINs, votes and lists are kept.');
-    console.log('  If the dashboard is running RIGHT NOW, restart it to show the new trip:');
-    console.log('  close its window (or Ctrl+C), then Start-Dashboard.bat / npm start.');
+installIntoDb();
+
+// Since the trip_config upgrade the app reads its trip from the database. Install
+// into data.db when one exists; otherwise the first start seeds it.
+function installIntoDb() {
+  const DB_PATH = path.join(ROOT, 'data.db');
+  if (fs.existsSync(DB_PATH)) {
+    // Since the trip_config upgrade the app reads its trip from the database,
+    // which was seeded the first time the server ran — the files patched above
+    // only feed a FRESH database. So install the trip into data.db too, through
+    // the same versioned import path the admin page uses (tools/lib/trip-store.js).
+    let r = null, dbFail = '';
+    try {
+      const Database = require(path.join(ROOT, 'node_modules', 'better-sqlite3'));
+      const { importTripConfig } = require(path.join(__dirname, 'lib', 'trip-store.js'));
+      const db = new Database(DB_PATH, { timeout: 3000 });
+      try { r = importTripConfig(db, trip, 'apply-tool'); }
+      finally { try { db.close(); } catch (e) {} }
+      if (!r.ok) dbFail = 'the trip failed the import validation: ' + r.errors.join('; ');
+    } catch (e) {
+      r = null;
+      dbFail = e.message; // e.g. SQLITE_BUSY: the running server holds the database
+    }
+    if (r && r.ok) {
+      console.log('✓ Trip installed into the database too (data.db, trip version ' + r.version + ').');
+      console.log('  Existing PINs, votes and lists are kept.');
+      console.log('  If the dashboard is running RIGHT NOW, restart it to show the new trip:');
+      console.log('  close its window (or Ctrl+C), then Start-Dashboard.bat / npm start.');
+    } else {
+      // Direct install didn't work — fall back to the loud manual instructions.
+      console.log('⚠ ONE MORE STEP — the dashboard has been started before (a data.db file');
+      console.log('  exists), and the app reads its trip from that database, not from the');
+      console.log('  files this tool just patched. Installing your trip into the database');
+      console.log('  directly didn\'t work here (' + dbFail + ').');
+      console.log('  Your new trip will NOT appear until you do ONE of these:');
+      console.log('    a) Fresh start: stop the dashboard (close its window / Ctrl+C) and');
+      console.log('       delete the data.db file, then start it again. Sample-trip PINs,');
+      console.log('       votes and lists are wiped; everyone picks a PIN at next login.');
+      console.log('    b) Keep existing data: paste the same JSON into the admin page\'s');
+      console.log('       Trip Setup box and hit Import instead — see ADMIN.md.');
+    }
   } else {
-    // Direct install didn't work — fall back to the loud manual instructions.
-    console.log('⚠ ONE MORE STEP — the dashboard has been started before (a data.db file');
-    console.log('  exists), and the app reads its trip from that database, not from the');
-    console.log('  files this tool just patched. Installing your trip into the database');
-    console.log('  directly didn\'t work here (' + dbFail + ').');
-    console.log('  Your new trip will NOT appear until you do ONE of these:');
-    console.log('    a) Fresh start: stop the dashboard (close its window / Ctrl+C) and');
-    console.log('       delete the data.db file, then start it again. Sample-trip PINs,');
-    console.log('       votes and lists are wiped; everyone picks a PIN at next login.');
-    console.log('    b) Keep existing data: paste the same JSON into the admin page\'s');
-    console.log('       Trip Setup box and hit Import instead — see ADMIN.md.');
+    console.log('   Start the dashboard and your trip seeds its database on first run:');
+    console.log('   • Windows: double-click Start-Dashboard.bat');
+    console.log('   • Terminal: npm start');
+    console.log('   Then open http://localhost:3000 and log in as one of your travelers.');
   }
-} else {
-  console.log('   Start the dashboard and your trip seeds its database on first run:');
-  console.log('   • Windows: double-click Start-Dashboard.bat');
-  console.log('   • Terminal: npm start');
-  console.log('   Then open http://localhost:3000 and log in as one of your travelers.');
 }

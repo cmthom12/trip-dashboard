@@ -65,6 +65,11 @@ do nothing.
   shows the address to type on the other device. Windows may show a firewall
   question the first time; choose Allow. (This is what "self-hosted" means:
   it's your computer doing the serving.)
+- **What a visitor sees before signing in** (v0.24.0 and later): only the trip's
+  title, dates and traveler names on the sign-in screen. The plan, bookings
+  (confirmation numbers), notes, packing and votes are sent only to someone
+  signed in with their PIN. Anyone who can reach the address can still see those
+  names and dates, so pick a trip title you're happy to have seen.
 - **From outside your home — cellular, or family in another city: no.** The
   dashboard is *not* on the internet, which also means nothing about your trip
   leaves your house. Putting it on the internet properly (so the whole family
@@ -123,8 +128,11 @@ The template also ships a seed copy of the trip inline in **`public/index.html`*
 <script type="application/json" id="trip-data"> … </script>
 ```
 
-That block is what seeds the database on the very first start (and is the
-fallback the client renders before login). Its keys:
+That block holds the synthetic sample only. On the very first start the
+database is seeded from `trip-seed.json` next to `server.js` (what
+`tools/apply-trip-data.js` writes) or, if that file is missing, from this block.
+**Keep your real trip out of `public/`**: every file there is served to anyone,
+signed in or not. The block's keys (the same shape as `trip-seed.json`):
 
 - **`trip`** — title, brand, subtitle, start/end dates, optional photos URL
 - **`family`** — the travelers: `name`, `color` (`[background, text]`), `interests`
@@ -138,7 +146,8 @@ Two things to keep in sync when you rename travelers by hand:
    allow-list used only when the database has no imported trip).
 
 Timezone for the calendar/now-clock: the trip's top-level `"tz"` key
-(e.g. `"America/Chicago"`). Optional per-day or per-activity overrides go in the
+(e.g. `"America/Chicago"`). Weather shows °F unless the trip has a top-level
+`"units": "C"`. Optional per-day or per-activity overrides go in the
 `DAY_TZ` / `ACT_TZ` objects in `public/index.html`.
 
 ## File layout

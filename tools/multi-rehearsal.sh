@@ -100,15 +100,25 @@ TOK="$(printf '%s' "$R" | sed 's/.*"token":"\([a-f0-9]*\)".*/\1/')"
 J -X POST "localhost:$PORT_A/api/notes" -H "X-Auth-Token: $TOK" \
   -d '{"author":"Alex","message":"multi-rehearsal isolation probe"}' | grep -q '"ok":true'
 ck $? "A: authenticated note write accepted"
-curl -s "localhost:$PORT_A/api/notes" | grep -q 'isolation probe'
-ck $? "A: note visible on read-back"
+curl -s -H "X-Auth-Token: $TOK" "localhost:$PORT_A/api/notes" | grep -q 'isolation probe'
+ck $? "A: note visible on read-back (signed-in read)"
 
 H_A1="$(hash_of "$TMP_A/data.db")"
 H_B1="$(hash_of "$TMP_B/data.db")"
 [ "$H_A0" != "$H_A1" ]; ck $? "A: data.db hash CHANGED after the write"
 [ "$H_B0" = "$H_B1" ]; ck $? "B: data.db byte-identical to pre-test (isolation)"
-curl -s "localhost:$PORT_B/api/notes" | grep -q 'isolation probe'
+# Reads need a signed-in reader (v0.24.0), so B gets its own sign-in — taken
+# only now, after the byte-identical check above. The "not present" check
+# must see a real 200 list: a 401 body would not contain the probe either.
+RB="$(J -X POST "localhost:$PORT_B/api/login" -d '{"name":"Alex","pin":"1234"}')"
+TOK_B="$(printf '%s' "$RB" | sed 's/.*"token":"\([a-f0-9]*\)".*/\1/')"
+[ -n "$TOK_B" ] && [ "$TOK_B" != "$TOK" ]; ck $? "B: its own sign-in issued a different token"
+NB="$(curl -s -w '\n%{http_code}' -H "X-Auth-Token: $TOK_B" "localhost:$PORT_B/api/notes")"
+[ "$(printf '%s' "$NB" | tail -1)" = 200 ]; ck $? "B: signed-in notes read answered 200"
+printf '%s' "$NB" | grep -q 'isolation probe'
 [ $? -ne 0 ]; ck $? "B: the note does not appear via B's API"
+C="$(curl -s -o /dev/null -w '%{http_code}' -H "X-Auth-Token: $TOK" "localhost:$PORT_B/api/notes")"
+[ "$C" = 401 ]; ck $? "B: A's token is not a reader on B ($C)"
 
 echo
 echo "== multi-rehearsal summary =="

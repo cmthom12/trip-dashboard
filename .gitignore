@@ -45,6 +45,7 @@ Thumbs.db
 # reservations. The workshop repo ships only the sample trip in public/index.html;
 # your real JSON lives in its own trip folder (~/code/family-trip-<name>/).
 my-trip.json
+trip-seed.json
 trip-data.json
 *-trip.json
 mustdos.json

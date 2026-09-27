@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
 <title>Trip Dashboard</title>
 <link rel="manifest" href="/manifest.json"/>
 <meta name="theme-color" content="#0D2B4E"/>
@@ -23,6 +23,10 @@
 ::-webkit-scrollbar{display:none}
 *{-ms-overflow-style:none;scrollbar-width:none}
 input,select,textarea{font-size:16px}
+/* On touch screens, fields under 16px make iOS zoom the page when tapped.
+   Many fields set a smaller inline size, so lift exactly those (8–15px) to
+   16px; bigger ones (the PIN box) keep their size. */
+@media (pointer:coarse){:is(input,select,textarea):is([style*="font-size: 8"],[style*="font-size: 9"],[style*="font-size: 10"],[style*="font-size: 11"],[style*="font-size: 12"],[style*="font-size: 13"],[style*="font-size: 14"],[style*="font-size: 15"]){font-size:16px!important}}
 body{background:#F0F2F5;overscroll-behavior:none}
 .pulse-dot{animation:pulse 2s infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
@@ -1720,37 +1724,187 @@ body{background:#F0F2F5;overscroll-behavior:none}
     document.getElementById('trip-data').textContent = txt;
     return true;
   }
+  // v0.24.1: never a blank page while the trip loads. On a weak signal (or a
+  // VPN with no route) the request can hang for up to 15 s before the saved
+  // copy or the "Try again" screen takes over; say what is happening.
+  var waitBox = null;
+  function showWait() {
+    waitBox = document.createElement('div');
+    waitBox.id = 'boot-wait';
+    waitBox.setAttribute('role', 'status');
+    waitBox.style.cssText = 'min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;text-align:center;font:16px system-ui,sans-serif;color:#64748B;background:#F8FAFC';
+    waitBox.textContent = 'Opening the trip\u2026';
+    document.body.appendChild(waitBox);
+  }
+  function hideWait() {
+    if (waitBox && waitBox.parentNode) waitBox.parentNode.removeChild(waitBox);
+    waitBox = null;
+  }
   function start() {
+    // The app script sits AFTER this one in the page: when the offline
+    // shortcut below starts the app straight away, the parser may not have
+    // reached it yet — wait for the page to finish parsing first.
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', start);
+      return;
+    }
+    hideWait();
     var s = document.createElement('script');
     s.textContent = document.getElementById('trip-main').textContent;
     document.body.appendChild(s);
   }
-  var ctl = ('AbortController' in window) ? new AbortController() : null;
-  var timer = setTimeout(function () { if (ctl) ctl.abort(); }, 3000);
-  fetch('/api/trip', ctl ? { signal: ctl.signal } : {}).then(function (r) {
-    clearTimeout(timer);
-    if (!r.ok) throw new Error('http ' + r.status);
-    return r.text();
-  }).then(function (txt) {
-    if (adopt(txt)) { try { localStorage.setItem(CACHE_KEY, txt); } catch (e) {} }
+  // v0.24.0: the full trip is for signed-in travelers. Without a valid token
+  // the server answers with a summary (title, dates, theme, names + colours);
+  // that becomes a sign-in "shell" built on the inline sample's structure with
+  // every plan section emptied, and the app reloads once sign-in succeeds so
+  // this same request fetches the full trip with the new token.
+  function shellFrom(sum) {
+    var base = {};
+    try { base = JSON.parse(document.getElementById('trip-data').textContent) || {}; } catch (e) {}
+    var trip = {};
+    var k;
+    for (k in (base.trip || {})) trip[k] = base.trip[k];
+    for (k in (sum.trip || {})) trip[k] = sum.trip[k];
+    trip.photosUrl = '';
+    return JSON.stringify({
+      __shell: true, trip: trip, family: Array.isArray(sum.family) ? sum.family : [],
+      categories: base.categories || {}, days: [], dayCoords: {}, flights: [],
+      reservationsSeed: [], essentials: [], embassies: [], enrichments: {}, mustDos: [],
+      tz: sum.tz
+    });
+  }
+  var tok = null;
+  try { tok = localStorage.getItem('tg_token'); } catch (e) {}
+  function getTrip(ms) {
+    var opts = {};
+    var ctl = ('AbortController' in window) ? new AbortController() : null;
+    if (ctl) opts.signal = ctl.signal;
+    if (tok) opts.headers = { 'X-Auth-Token': tok };
+    var timer = setTimeout(function () { if (ctl) ctl.abort(); }, ms);
+    return fetch('/api/trip', opts).then(function (r) {
+      clearTimeout(timer);
+      if (!r.ok) { var er = new Error('http ' + r.status); er.status = r.status; throw er; }
+      return r.text();
+    }, function (e) { clearTimeout(timer); throw e; });
+  }
+  // No trip at all (first open on a weak signal, or right after signing in,
+  // when the old copy was deliberately dropped): say so and offer a retry —
+  // never fall back to the built-in SAMPLE trip, which would look like the
+  // family's plan to a signed-in traveler.
+  function unreachable(err) {
+    hideWait();
+    var box = document.createElement('div');
+    box.setAttribute('role', 'alert');
+    box.style.cssText = 'min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:24px;text-align:center;font:16px system-ui,sans-serif;color:#0D2B4E;background:#F8FAFC';
+    var msg = document.createElement('div');
+    var out = false;
+    try { out = localStorage.getItem('tg_signed_out') === '1'; } catch (e) {}
+    var noNet = navigator.onLine === false;
+    msg.textContent = err && err.status === 404 ? "This trip isn't set up yet — ask the trip organizer."
+      : out && !tok ? "You're signed out. Sign in again once you have a signal."
+      : noNet ? 'No signal — this phone has no saved copy of the trip yet. Try again once you have a signal.'
+      : tok ? 'Loading your trip is taking too long — the signal may be weak.'
+      : "Can't reach the trip right now — check your signal.";
+    var btn = document.createElement('button');
+    btn.textContent = 'Try again';
+    btn.style.cssText = 'font:600 16px system-ui,sans-serif;padding:12px 22px;border-radius:12px;border:0;background:#0D2B4E;color:#fff;cursor:pointer';
+    btn.onclick = function () { try { window.location.reload(); } catch (e) {} };
+    box.appendChild(msg); box.appendChild(btn);
+    document.body.appendChild(box);
+  }
+  function got(txt) {
+    var d = null;
+    try { d = JSON.parse(txt); } catch (e) {}
+    if (d && d.summary === true) {
+      // not signed in (or the session ended): never keep a full trip around
+      try { localStorage.removeItem(CACHE_KEY); localStorage.removeItem('tg_data_cache'); } catch (e) {}
+      adopt(shellFrom(d));
+      start();
+      return;
+    }
+    // a 200 that isn't the trip (e.g. a hotel wi-fi sign-in page) counts as unreachable
+    if (!d || !d.trip || !adopt(txt)) throw new Error('not a trip');
+    try { localStorage.setItem(CACHE_KEY, txt); } catch (e) {}
     start();
-  }).catch(function () {
-    clearTimeout(timer);
+  }
+  function useSavedOrGiveUp(err) {
     var cached = null;
     try { cached = localStorage.getItem(CACHE_KEY); } catch (e) {}
-    if (cached) adopt(cached); // offline: last-good trip; else the inline sample stays
-    start();
+    if (cached && adopt(cached)) { start(); return true; } // the last-good trip
+    if (location.protocol === 'file:') { start(); return true; } // opened as a plain file: the sample
+    return false;
+  }
+  showWait();
+  // The phone already knows it has no connection: don't make anyone wait.
+  if (navigator.onLine === false) {
+    if (!useSavedOrGiveUp()) unreachable();
+    return;
+  }
+  getTrip(3000).then(got).catch(function (e1) {
+    if (e1 && e1.status === 404) { unreachable(e1); return; } // the server has no trip at all
+    if (useSavedOrGiveUp()) return;
+    // one more, patient try before giving up
+    getTrip(12000).then(got).catch(unreachable);
   });
 })();
 </script>
 <script type="text/plain" id="trip-main">
 const API = '';
 const OUTBOX_KEY = 'tg_outbox';
+// v0.24.0: family-data reads carry the session token — the server now answers
+// 401 without one.
+const authHeaders = () => {
+  let t = null;
+  try {
+    t = localStorage.getItem('tg_token');
+  } catch (e) {}
+  return t ? {
+    'X-Auth-Token': t
+  } : {};
+};
+const authGet = url => fetch(url, {
+  headers: authHeaders()
+});
+// v0.24.0 offline shell: the last lists this traveler loaded, kept on this
+// device so a cold open with no signal still shows bookings, plan, notes and
+// packing. Tagged with the traveler's name and cleared at sign-out, at a
+// 401, and whenever the page starts as a sign-in shell.
+const DATA_CACHE_KEY = 'tg_data_cache';
+const readDataCache = name => {
+  try {
+    const d = JSON.parse(localStorage.getItem(DATA_CACHE_KEY) || 'null');
+    return d && d.user === name ? d : null;
+  } catch (e) {
+    return null;
+  }
+};
+const saveDataCache = (name, part) => {
+  if (!name) return;
+  try {
+    const prev = readDataCache(name) || {};
+    localStorage.setItem(DATA_CACHE_KEY, JSON.stringify(Object.assign(prev, part, {
+      user: name,
+      at: Date.now()
+    })));
+  } catch (e) {}
+};
+const clearDataCache = () => {
+  try {
+    localStorage.removeItem(DATA_CACHE_KEY);
+  } catch (e) {}
+};
 function _obGet() {
   try {
     return JSON.parse(localStorage.getItem(OUTBOX_KEY) || '[]');
   } catch (e) {
     return [];
+  }
+}
+function _obWho() {
+  try {
+    return localStorage.getItem('tg_name') || undefined;
+  } catch (e) {
+    return undefined;
   }
 }
 function _obSet(q) {
@@ -1763,10 +1917,21 @@ function _obSet(q) {
 // adoption) calls this BEFORE any flush can run: it rewrites only the token
 // header on every queued item — order and X-Op-Id are untouched, so the
 // server's idempotency contract still holds for the replay.
-function obRestampToken(token) {
+//
+// Queued writes also carry who made them (it.n, from v0.24.0). When a
+// DIFFERENT traveler signs in on this device, those writes are dropped rather
+// than restamped — otherwise they would be sent as the new traveler.
+function obRestampToken(token, name) {
   if (!token) return 0;
-  const q = _obGet();
+  let q = _obGet();
   let n = 0;
+  if (name) {
+    const mine = q.filter(it => !it || !it.n || it.n === name);
+    if (mine.length !== q.length) {
+      n += q.length - mine.length;
+      q = mine;
+    }
+  }
   q.forEach(it => {
     if (!it || !it.o) return;
     it.o.headers = Object.assign({}, it.o.headers);
@@ -1798,13 +1963,16 @@ async function qfetch(url, opts) {
         const q = _obGet();
         q.push({
           u: url,
-          o: opts
+          o: opts,
+          n: _obWho()
         });
         _obSet(q);
       } catch (e) {}
       try {
         localStorage.removeItem('tg_name');
         localStorage.removeItem('tg_token');
+        localStorage.removeItem('tg_trip_cache');
+        localStorage.removeItem('tg_data_cache');
       } catch (e) {}
       try {
         location.reload();
@@ -1816,7 +1984,8 @@ async function qfetch(url, opts) {
       const q = _obGet();
       q.push({
         u: url,
-        o: opts
+        o: opts,
+        n: _obWho()
       });
       _obSet(q);
       try {
@@ -1835,7 +2004,8 @@ async function flushOutbox() {
   let q = _obGet();
   if (!q.length) return 0;
   const keep = [];
-  let sent = 0;
+  let sent = 0,
+    dropped = 0;
   for (let i = 0; i < q.length; i++) {
     const it = q[i];
     try {
@@ -1850,6 +2020,12 @@ async function flushOutbox() {
         keep.push(...q.slice(i));
         break;
       }
+      if (r && r.status >= 400 && r.status < 500 && r.status !== 408 && r.status !== 429) {
+        // Refused for good (the item was deleted, the change isn't allowed, the
+        // body is invalid): retrying can never succeed, so drop it and say so.
+        dropped++;
+        continue;
+      }
       if (!r.ok) throw new Error('http');
       sent++;
     } catch (e) {
@@ -1857,6 +2033,16 @@ async function flushOutbox() {
     }
   }
   _obSet(keep);
+  if (dropped > 0) {
+    try {
+      window.dispatchEvent(new CustomEvent('tg-sync', {
+        detail: {
+          type: 'dropped',
+          n: dropped
+        }
+      }));
+    } catch (_e) {}
+  }
   if (sent > 0) {
     try {
       window.dispatchEvent(new CustomEvent('tg-sync', {
@@ -1875,6 +2061,41 @@ const {
   useCallback
 } = React;
 const TRIP = JSON.parse(document.getElementById('trip-data').textContent);
+// v0.24.0: a sign-in shell (see the bootstrap above) holds names but no plan;
+// once someone signs in, reload so the bootstrap fetches the full trip.
+const TRIP_IS_SHELL = TRIP.__shell === true;
+// A sign-in only sticks if this browser keeps site storage. Private modes and
+// some privacy settings refuse it (localStorage throws or drops the write);
+// reloading there would lose the sign-in and, with the family portal, sign in
+// and reload again forever. So: read the token back before trusting it.
+const tokenSaved = token => {
+  try {
+    return !!token && localStorage.getItem('tg_token') === token;
+  } catch (e) {
+    return false;
+  }
+};
+// Reload once per sign-in, so the bootstrap fetches the full trip with the new
+// token. The sessionStorage mark makes a second reload for the same token a
+// no-op (belt and braces against any loop). Returns true if it reloaded.
+const _mark = t => {
+  let h = 5381;
+  for (let i = 0; i < t.length; i++) h = (h * 33 ^ t.charCodeAt(i)) >>> 0;
+  return h.toString(36); // a short fingerprint — never the token itself
+};
+const reloadForFullTrip = token => {
+  if (!tokenSaved(token)) return false;
+  try {
+    if (sessionStorage.getItem('tg_signin_reload') === _mark(token)) return false;
+    sessionStorage.setItem('tg_signin_reload', _mark(token));
+  } catch (e) {}
+  try {
+    window.location.reload();
+    return true;
+  } catch (e) {
+    return false;
+  }
+};
 const IS_CRUISE = !!(TRIP.trip && typeof TRIP.trip.ship === "string" && TRIP.trip.ship.trim());
 const PACK_TEMPLATES = [{
   emoji: "🧳",
@@ -2125,7 +2346,9 @@ function linkify(text) {
   });
 }
 function Login({
-  onLogin
+  onLogin,
+  storageBlocked,
+  onPortal
 }) {
   const [step, setStep] = useState("name");
   const [name, setName] = useState(null);
@@ -2252,7 +2475,34 @@ function Login({
       fontSize: 12,
       marginTop: 6
     }
-  }, fmtRange(TRIP.trip.startDate, TRIP.trip.endDate, false), IS_CRUISE ? " \xB7 " + TRIP.trip.ship : null)), step === "name" && React.createElement(React.Fragment, null, React.createElement("div", {
+  }, fmtRange(TRIP.trip.startDate, TRIP.trip.endDate, false), IS_CRUISE ? " \xB7 " + TRIP.trip.ship : null)), storageBlocked && React.createElement("div", {
+    role: "alert",
+    style: {
+      background: "#FEF2F2",
+      border: "1px solid #FCA5A5",
+      color: "#991B1B",
+      borderRadius: 12,
+      padding: "10px 12px",
+      fontSize: 13,
+      lineHeight: 1.4,
+      marginBottom: 14
+    }
+  }, "This browser is blocking site storage (a private window or a privacy setting), so signing in can't stick. Open this page in a normal browser window, or allow site data for it, then sign in again."), onPortal && step === "name" && React.createElement("button", {
+    onClick: onPortal,
+    style: {
+      display: "block",
+      width: "100%",
+      marginBottom: 12,
+      padding: "10px 12px",
+      borderRadius: 12,
+      border: "1px solid #CBD5E1",
+      background: "#F8FAFC",
+      color: "#0D2B4E",
+      fontSize: 14,
+      fontWeight: 600,
+      cursor: "pointer"
+    }
+  }, "Continue with the family portal"), step === "name" && React.createElement(React.Fragment, null, React.createElement("div", {
     style: {
       fontSize: 13,
       fontWeight: 600,
@@ -2392,7 +2642,14 @@ function Login({
       marginTop: 6,
       textAlign: "center"
     }
-  }, "Heads up: 5 wrong tries locks this name for 30 minutes \u2014 your PIN shows as you type, so double-check it before Enter."), React.createElement("button", {
+  }, "Heads up: 5 wrong tries locks this name for 30 minutes \u2014 your PIN shows as you type, so double-check it before Enter."), name && !isNew && React.createElement("div", {
+    style: {
+      color: "#6B7280",
+      fontSize: 12,
+      marginTop: 8,
+      textAlign: "center"
+    }
+  }, "Forgot your PIN? Ask the trip organizer to reset it \u2014 your votes and notes stay."), React.createElement("button", {
     onClick: submit,
     disabled: busy || locked || pin.length !== 4,
     style: {
@@ -2597,6 +2854,37 @@ function dayWhenText(dayId, hhmm) {
   return out;
 }
 const DEFAULT_TZ = typeof TRIP.tz === "string" && TRIP.tz ? TRIP.tz : "America/New_York";
+// v0.24.0: temperatures in °C when the trip says "units": "C"; °F otherwise.
+const TEMP_UNIT = TRIP.units === "C" ? "C" : "F";
+// v0.24.0: the server stamps flight checks as an ISO time; show it in the
+// trip's time zone. Older rows hold a ready-made string — shown as-is.
+const fmtChecked = v => {
+  const x = String(v || "");
+  if (!/^\d{4}-\d{2}-\d{2}T/.test(x)) return x;
+  try {
+    return new Date(x).toLocaleString("en-US", {
+      timeZone: DEFAULT_TZ,
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      timeZoneName: "short"
+    });
+  } catch (e) {
+    return x;
+  }
+};
+// The forecast service covers today + 15 days. Outside that window the card
+// says so without calling it (a call there only answers 400).
+const FORECAST_DAYS = 16;
+const daysFromToday = ymd => {
+  const p = String(ymd || "").split("-");
+  if (p.length !== 3) return null;
+  const d = new Date(+p[0], +p[1] - 1, +p[2]),
+    n = new Date();
+  const t = new Date(n.getFullYear(), n.getMonth(), n.getDate());
+  return Math.round((d - t) / 86400000);
+};
 const DAY_TZ = {};
 const ACT_TZ = {};
 function tzForEvent(dayId, activityId) {
@@ -2773,10 +3061,29 @@ function WeatherChip({
   });
   useEffect(() => {
     let ok = true;
+    const ahead = daysFromToday(date);
+    if (ahead !== null && ahead < 0) {
+      setSt({
+        past: true
+      });
+      return;
+    }
+    if (ahead !== null && ahead >= FORECAST_DAYS) {
+      setSt({
+        far: true
+      });
+      return;
+    }
+    if (typeof navigator !== "undefined" && navigator.onLine === false) {
+      setSt({
+        offline: true
+      });
+      return;
+    }
     setSt({
       loading: true
     });
-    const url = "https://api.open-meteo.com/v1/forecast?latitude=" + ll[0] + "&longitude=" + ll[1] + "&daily=weathercode,temperature_2m_max,temperature_2m_min,precipitation_probability_max&temperature_unit=fahrenheit&timezone=auto&start_date=" + date + "&end_date=" + date;
+    const url = "https://api.open-meteo.com/v1/forecast?latitude=" + ll[0] + "&longitude=" + ll[1] + "&daily=weathercode,temperature_2m_max,temperature_2m_min,precipitation_probability_max&temperature_unit=" + (TEMP_UNIT === "C" ? "celsius" : "fahrenheit") + "&timezone=auto&start_date=" + date + "&end_date=" + date;
     fetch(url).then(r => r.json()).then(d => {
       if (!ok) return;
       const dd = d && d.daily;
@@ -2825,11 +3132,12 @@ function WeatherChip({
       style: {
         color: "#fff"
       }
-    }, st.hi, "\xB0 / ", st.lo, "\xB0F"), w[1] ? " · " + w[1] : "", st.pop != null ? " · " + st.pop + "% rain" : ""));
+    }, st.hi, "\xB0 / ", st.lo, "\xB0" + TEMP_UNIT), w[1] ? " · " + w[1] : "", st.pop != null ? " · " + st.pop + "% rain" : ""));
   }
+  if (st.past) return null;
   return React.createElement("div", {
     style: box
-  }, React.createElement("span", null, "\uD83D\uDCC5"), React.createElement("span", null, "Forecast opens ~16 days out \u2014 check back closer to the trip."));
+  }, React.createElement("span", null, st.far ? "\uD83D\uDCC5" : "\u26C5"), React.createElement("span", null, st.far ? "Forecast opens ~16 days out \u2014 check back closer to the trip." : st.offline ? "Forecast needs signal." : "Weather isn't available right now \u2014 try again later."));
 }
 function Row({
   e,
@@ -4674,11 +4982,11 @@ function DayPlanCard({
       }
     }, React.createElement("span", {
       style: {
-        fontSize: 10.5,
+        fontSize: 12.5,
         color: "#B91C1C",
         fontWeight: 800
       }
-    }, linkedRes ? "Deletes the booking too" : "Remove?"), React.createElement("button", {
+    }, linkedRes ? "Remove from the plan? This also deletes its booking." : "Remove from the plan?"), React.createElement("button", {
       onClick: () => {
         onDelete(it.id);
         setConfirmId(null);
@@ -5561,7 +5869,7 @@ function ReviewTab({
   const [addForm, setAddForm] = useState(BLANK_ADD);
   const load = useCallback(async () => {
     try {
-      const r = await fetch(API + '/api/review/items?name=' + encodeURIComponent(user));
+      const r = await authGet(API + '/api/review/items?name=' + encodeURIComponent(user));
       if (!r || !r.ok) throw new Error('http');
       const d = await r.json();
       setData(d);
@@ -6314,6 +6622,14 @@ function App() {
     printPortalRef.current = el;
   }
   const [authed, setAuthed] = useState(false);
+  const [storageBlocked, setStorageBlocked] = useState(false);
+  const [portalPaused] = useState(() => {
+    try {
+      return localStorage.getItem("tg_signed_out") === "1";
+    } catch (e) {
+      return false;
+    }
+  });
   const [user, setUser] = useState(null);
   const [tab, setTab] = useState(() => {
     try {
@@ -6406,6 +6722,8 @@ function App() {
         setToast("⏳ Saved on this phone — will sync when you're back online");
       } else if (d.type === "flushed") {
         setToast("✓ " + d.n + " queued change" + (d.n === 1 ? "" : "s") + " synced");
+      } else if (d.type === "dropped") {
+        setToast("⚠ " + d.n + " offline change" + (d.n === 1 ? " was" : "s were") + " refused (the item changed or was removed meanwhile)");
       }
     };
     window.addEventListener("online", on);
@@ -6448,14 +6766,7 @@ function App() {
           'X-Auth-Token': t
         }
       }).then(r => {
-        if (r && r.status === 401) {
-          try {
-            localStorage.removeItem("tg_name");
-            localStorage.removeItem("tg_token");
-          } catch (e) {}
-          setUser(null);
-          setAuthed(false);
-        }
+        if (r && r.status === 401) endSession();
       }).catch(() => {});
       return;
     }
@@ -6465,6 +6776,10 @@ function App() {
     // failure is silent and identical — 404 (this instance isn't in the portal),
     // 401 (no/expired cookie, or a name this trip doesn't list), or offline —
     // all fall through to the PIN screen exactly as before.
+    // …unless this traveler just signed out here: then the portal would sign
+    // them straight back in, and nobody else could use this browser. The
+    // sign-in screen offers "Continue with the family portal" instead.
+    if (portalPaused) return;
     fetch(API + '/api/sso', {
       credentials: 'same-origin'
     }).then(r => r && r.ok ? r.json() : null).then(d => {
@@ -6473,7 +6788,9 @@ function App() {
         localStorage.setItem("tg_name", d.name);
         localStorage.setItem("tg_token", d.token);
       } catch (e) {}
-      obRestampToken(d.token); // queued offline writes now carry this session
+      if (!tokenSaved(d.token)) return setStorageBlocked(true);
+      obRestampToken(d.token, d.name); // queued offline writes now carry this session
+      if (TRIP_IS_SHELL && reloadForFullTrip(d.token)) return;
       setUser(d.name);
       setAuthed(true);
     }).catch(() => {});
@@ -6496,30 +6813,83 @@ function App() {
       localStorage.setItem("tg_name", name);
       localStorage.setItem("tg_token", token);
     } catch {}
-    obRestampToken(token); // before authed flips and the flush effect runs
+    if (!tokenSaved(token)) return setStorageBlocked(true);
+    try {
+      localStorage.removeItem("tg_signed_out");
+    } catch (e) {}
+    obRestampToken(token, name); // before authed flips and the flush effect runs
+    if (TRIP_IS_SHELL && reloadForFullTrip(token)) return;
     setUser(name);
     setAuthed(true);
   };
-  const logout = () => {
+  // Every way out of a session lands here: forget the session AND every copy of
+  // the family's trip on this device, then reload so the bootstrap asks again
+  // without a token and gets the sign-in shell. (Already a shell: no reload.)
+  const endSession = () => {
     try {
       localStorage.removeItem("tg_name");
       localStorage.removeItem("tg_token");
+      localStorage.removeItem("tg_trip_cache");
+      sessionStorage.removeItem("tg_signin_reload");
     } catch {}
+    clearDataCache();
     setAuthed(false);
     setUser(null);
+    if (!TRIP_IS_SHELL) {
+      try {
+        window.location.reload();
+      } catch (e) {}
+    }
+  };
+  // The Sign-out button. Changes queued while offline belong to this person;
+  // signing out would hand them to whoever signs in next, so ask first and
+  // drop them if the answer is yes.
+  const logout = () => {
+    const pending = _obGet().filter(it => !it || !it.n || it.n === user).length;
+    if (pending && !window.confirm(pending + (pending === 1 ? " change hasn't" : " changes haven't") + " been sent yet (no signal). Sign out anyway and discard " + (pending === 1 ? "it" : "them") + "?")) return;
+    if (pending) _obSet([]);
+    try {
+      localStorage.setItem("tg_signed_out", "1");
+    } catch (e) {}
+    // v0.24.0: revoke this device's token on the server too (best effort — if
+    // there is no signal the token simply stays until an admin PIN reset).
+    try {
+      const t = localStorage.getItem("tg_token");
+      if (t) fetch(API + '/api/logout', {
+        method: 'POST',
+        headers: {
+          'X-Auth-Token': t
+        },
+        keepalive: true
+      }).catch(() => {});
+    } catch (e) {}
+    endSession();
   };
   const loadData = useCallback(async (quiet = false) => {
     if (!quiet) setSyncing(true);
     setSyncError(false);
     try {
-      const [iRes, fRes, nRes, sRes, rRes, pRes, scRes] = await Promise.all([fetch(API + '/api/interests'), fetch(API + '/api/flights'), fetch(API + '/api/notes'), fetch(API + '/api/suggestions'), fetch(API + '/api/reservations'), fetch(API + '/api/packing'), fetch(API + '/api/schedule')]);
-      if (iRes.ok) setInterests(await iRes.json());
-      if (fRes.ok) setFlightStatuses(await fRes.json());
-      if (nRes.ok) setNotes(await nRes.json());
-      if (sRes.ok) setSuggestions(await sRes.json());
-      if (rRes.ok) setReservations(await rRes.json());
-      if (pRes.ok) setPacking(await pRes.json());
-      if (scRes.ok) setSchedule(await scRes.json());
+      const [iRes, fRes, nRes, sRes, rRes, pRes, scRes] = await Promise.all([authGet(API + '/api/interests'), authGet(API + '/api/flights'), authGet(API + '/api/notes'), authGet(API + '/api/suggestions'), authGet(API + '/api/reservations'), authGet(API + '/api/packing'), authGet(API + '/api/schedule')]);
+      if ([iRes, fRes, nRes, sRes, rRes, pRes, scRes].some(r => r && r.status === 401)) {
+        // the session was revoked (PIN reset) or expired: back to sign-in
+        setSyncing(false);
+        setLoaded(true);
+        endSession();
+        return;
+      }
+      const snap = {};
+      if (iRes.ok) setInterests(snap.interests = await iRes.json());
+      if (fRes.ok) setFlightStatuses(snap.flights = await fRes.json());
+      if (nRes.ok) setNotes(snap.notes = await nRes.json());
+      if (sRes.ok) setSuggestions(snap.suggestions = await sRes.json());
+      if (rRes.ok) setReservations(snap.reservations = await rRes.json());
+      if (pRes.ok) setPacking(snap.packing = await pRes.json());
+      if (scRes.ok) setSchedule(snap.schedule = await scRes.json());
+      let me = null;
+      try {
+        me = localStorage.getItem("tg_name");
+      } catch (e) {}
+      saveDataCache(me, snap);
       setLastSync(new Date().toLocaleTimeString([], {
         hour: '2-digit',
         minute: '2-digit'
@@ -6530,8 +6900,36 @@ function App() {
     setSyncing(false);
     setLoaded(true);
   }, []);
+  // Keep the offline snapshot in step with what the screen shows, including
+  // changes made with no signal (queued in the outbox), so a cold reopen
+  // before they're sent still shows them.
+  useEffect(() => {
+    if (!authed || !loaded || !user) return;
+    saveDataCache(user, {
+      interests,
+      flights: flightStatuses,
+      notes,
+      suggestions,
+      reservations,
+      packing,
+      schedule
+    });
+  }, [authed, loaded, user, interests, flightStatuses, notes, suggestions, reservations, packing, schedule]);
   useEffect(() => {
     if (!authed) return;
+    // offline shell: show the last lists this traveler loaded right away; the
+    // network load below replaces them as soon as it answers.
+    const snap = readDataCache(user);
+    if (snap) {
+      if (snap.interests) setInterests(snap.interests);
+      if (snap.flights) setFlightStatuses(snap.flights);
+      if (snap.notes) setNotes(snap.notes);
+      if (snap.suggestions) setSuggestions(snap.suggestions);
+      if (snap.reservations) setReservations(snap.reservations);
+      if (snap.packing) setPacking(snap.packing);
+      if (snap.schedule) setSchedule(snap.schedule);
+      setLoaded(true);
+    }
     loadData();
     flushOutbox();
     let busy = false;
@@ -6864,13 +7262,23 @@ function App() {
     loadData(true);
   };
   const togglePacking = async id => {
+    // Send the state we want, not "flip": a write replayed from the offline
+    // queue then lands the same however many times it was already applied.
+    const cur = (packing || []).find(p => p.id === id);
+    const done = cur && cur.done ? 0 : 1;
     setPacking(prev => prev.map(p => p.id === id ? {
       ...p,
-      done: p.done ? 0 : 1
+      done
     } : p));
     try {
       await qfetch(API + '/api/packing/' + id + '/toggle', {
-        method: 'POST'
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          done
+        })
       });
     } catch {}
   };
@@ -6903,7 +7311,16 @@ function App() {
     cursor: "pointer"
   };
   if (!authed) return React.createElement(Login, {
-    onLogin: doLogin
+    onLogin: doLogin,
+    storageBlocked,
+    onPortal: portalPaused ? () => {
+      try {
+        localStorage.removeItem("tg_signed_out");
+      } catch (e) {}
+      try {
+        window.location.reload();
+      } catch (e) {}
+    } : null
   });
   const currentDay = DAYS.find(d => d.id === day);
   const FILTERS = [{
@@ -8249,7 +8666,17 @@ function App() {
       fontWeight: 700,
       fontSize: 13
     }
-  }, "Add")))))), tab === "map" && React.createElement(TripMap, {
+  }, "Add")))))), tab === "map" && netOff && React.createElement("div", {
+    role: "status",
+    style: {
+      margin: "10px 12px 0",
+      padding: "9px 12px",
+      borderRadius: 10,
+      background: "#FEF3C7",
+      color: "#92400E",
+      fontSize: 13
+    }
+  }, "Map needs signal \u2014 the plan and your lists still work offline."), tab === "map" && React.createElement(TripMap, {
     focus: mapFocus,
     interests: interests,
     user: user,
@@ -8413,7 +8840,7 @@ function App() {
         padding: "40px 20px",
         lineHeight: 1.5
       }
-    }, "Nothing tagged yet. Open the Itinerary and tap \u201CI'm interested\u201D on what you'd like to do \u2014 your picks gather here.") : groups.map(g => React.createElement("div", {
+    }, "Nothing tagged yet. Open the Itinerary and tap \u201CInterested?\u201D on what you'd like to do \u2014 your picks gather here.") : groups.map(g => React.createElement("div", {
       key: g.family ? "family" : g.day.id,
       style: {
         marginBottom: 18
@@ -9284,7 +9711,7 @@ function App() {
       fontWeight: 900,
       lineHeight: 1.1
     }
-  }, "Port Essentials"), React.createElement("div", {
+  }, IS_CRUISE ? "Port Essentials" : "Essentials"), React.createElement("div", {
     style: {
       fontSize: 13,
       color: "#6B7280",
@@ -9470,7 +9897,7 @@ function App() {
       margin: "0 auto",
       padding: "12px 12px 100px"
     }
-  }, extLink(PHOTOS_URL, {
+  }, safeHttpUrl(PHOTOS_URL) && extLink(PHOTOS_URL, {
     target: "_blank",
     rel: "noopener",
     style: {
@@ -9572,7 +9999,7 @@ function App() {
       color: "#6B7280",
       fontWeight: 600
     }
-  }, notes.length, " ", notes.length === 1 ? "note" : "notes"), React.createElement("button", {
+  }, notes.length >= 50 ? "Latest 50 notes" : notes.length + " " + (notes.length === 1 ? "note" : "notes")), React.createElement("button", {
     onClick: () => setOnlyMine(m => !m),
     style: {
       fontSize: 12,
@@ -10032,7 +10459,7 @@ function App() {
         padding: "40px 20px",
         lineHeight: 1.5
       }
-    }, sumPerson === "All" ? "Nothing tagged yet. Open the Itinerary and tap “I'm interested” on the things you'd like to do — they'll all gather here." : sumPerson + " hasn't tagged anything yet. Open the Itinerary and tap “I'm interested.”") : React.createElement(React.Fragment, null, React.createElement("div", {
+    }, sumPerson === "All" ? "Nothing tagged yet. Open the Itinerary and tap “Interested?” on the things you'd like to do — they'll all gather here." : sumPerson + " hasn't tagged anything yet. Open the Itinerary and tap “Interested?”") : React.createElement(React.Fragment, null, React.createElement("div", {
       style: {
         fontSize: 12,
         color: "#6B7280",
@@ -10046,7 +10473,7 @@ function App() {
       // The "go tag something" nudge belongs to the lens-OFF view. With the lens
       // on, an empty tagged list is the state the reader asked to see, not a
       // problem to fix.
-      if (totalShown === 0 && !sumUnplanned) return (sumPerson === "All" ? "Nothing tagged yet \u2014 tap \u201CI'm interested\u201D in the Itinerary." : sumPerson + " hasn't tagged anything yet.") + tail;
+      if (totalShown === 0 && !sumUnplanned) return (sumPerson === "All" ? "Nothing tagged yet \u2014 tap \u201CInterested?\u201D in the Itinerary." : sumPerson + " hasn't tagged anything yet.") + tail;
       return totalShown + " " + (totalShown === 1 ? "activity" : "activities") + " tagged" + (sumPerson !== "All" ? " by " + sumPerson : "") + tail + untail;
     })()), groups.map(g => React.createElement("div", {
       key: g.day.id,
@@ -10349,7 +10776,7 @@ function FlightCard({
       color: "#374151",
       fontWeight: 600
     }
-  }, f.terminal))), extLink(f.trackUrl, {
+  }, f.terminal))), safeHttpUrl(f.trackUrl) && extLink(f.trackUrl, {
     target: "_blank",
     rel: "noopener noreferrer",
     style: {
@@ -10371,7 +10798,7 @@ function FlightCard({
       fontWeight: 600,
       marginBottom: 6
     }
-  }, "Status", cur ? " · last checked " + (status.checked || "") : " · not yet checked"), React.createElement("div", {
+  }, "Status", cur ? " · last checked " + fmtChecked(status.checked) : " · not yet checked"), React.createElement("div", {
     style: {
       display: "flex",
       gap: 6,

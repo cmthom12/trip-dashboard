@@ -71,6 +71,9 @@ cp -r public "$STAGE/public"
 find "$STAGE/public" -name '*.backup-*' -type f -delete
 $SCP -r "$STAGE/public" "${SERVER}:${APP_DIR}/"
 rm -rf "$STAGE"
+# Safety copies an older apply-trip-data.js left IN public/ are served to anyone
+# and can hold a real trip: move them beside server.js (kept, no longer served).
+$SSH "$SERVER" "find '${APP_DIR}/public' -maxdepth 1 -type f -name '*.backup-*' -exec mv -f {} '${APP_DIR}/' \;"
 
 echo "==> installing deps + restarting ${PM2_NAME}"
 $SSH "$SERVER" "cd ${APP_DIR} && npm install --omit=dev"

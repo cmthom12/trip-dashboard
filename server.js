@@ -100,6 +100,63 @@ const adminGate = (req, res, next) => {
 };
 app.use('/api/admin', adminGate);
 
+// ── READ ACCESS (v0.24.0): family data is for signed-in travelers ───────────
+// Writes were always token-gated (the auth middleware below); reads were open,
+// so anyone who knew a trip's address could list its bookings (confirmation
+// numbers included), notes, packing and day plan. Each family-data GET now
+// takes `requireReader` at the ROUTE level — the middleware chain and its order
+// are untouched. A reader is a signed-in traveler (X-Auth-Token) or the
+// operator (X-Admin-Key, sharing the admin lockout counter so a GET is no
+// side door for guessing the key). GET /api/trip itself stays open but answers
+// a caller who is neither with a small summary — enough for the sign-in screen
+// and the family portal's trip cards, nothing from the plan.
+const _readTokenUser = db.prepare('SELECT name FROM user_tokens WHERE token = ?');
+const _adminKeyReads = req => {
+  const key = req.get('X-Admin-Key');
+  if (!ADMIN_KEY || key === undefined) return false;
+  const now = Date.now();
+  if (ADMIN_FAILS.until > now) return false;
+  if (crypto.timingSafeEqual(_adminDigest(key), _adminDigest(ADMIN_KEY))) {
+    ADMIN_FAILS.count = 0; ADMIN_FAILS.until = 0;
+    return true;
+  }
+  ADMIN_FAILS.count += 1;
+  if (ADMIN_FAILS.count >= 5) { ADMIN_FAILS.until = now + 30 * 60 * 1000; ADMIN_FAILS.count = 0; }
+  return false;
+};
+const readerOf = req => {
+  const tok = req.get('X-Auth-Token');
+  if (tok) { const row = _readTokenUser.get(tok); if (row) return row.name; }
+  return _adminKeyReads(req) ? '(admin)' : null;
+};
+const requireReader = (req, res, next) => {
+  const who = readerOf(req);
+  if (!who) {
+    if (!req.get('X-Auth-Token') && req.get('X-Admin-Key') !== undefined && ADMIN_FAILS.until > Date.now())
+      return res.status(429).json({ error: 'Too many wrong admin keys — try again later', retryMs: ADMIN_FAILS.until - Date.now() });
+    return res.status(401).json({ error: 'Sign in to see this trip' });
+  }
+  // Family data differs per caller and must never sit in a shared cache. (Set
+  // only on success: Chrome leaves an unread no-store 401 body "in flight".)
+  res.set('Cache-Control', 'private, no-store');
+  req.readerName = who;
+  next();
+};
+// What an anonymous caller may see: the sign-in screen needs the title, dates,
+// theme and traveler names + colours; the portal's cards read the same fields.
+// No days, activities, flights, bookings, interests or dietary data.
+const tripSummary = t => {
+  const tr = (t && t.trip) || {};
+  const pick = {};
+  for (const k of ['title', 'subtitle', 'brand', 'ship', 'startDate', 'endDate', 'theme']) if (tr[k] !== undefined) pick[k] = tr[k];
+  return {
+    summary: true,
+    trip: pick,
+    family: (Array.isArray(t && t.family) ? t.family : []).map(f => ({ name: String((f && f.name) || ''), color: f && f.color })).filter(f => f.name),
+    tz: t && typeof t.tz === 'string' ? t.tz : undefined
+  };
+};
+
 // ── APP SETTINGS: key/value store for operator-flipped runtime switches. Created
 // with the same inline CREATE TABLE IF NOT EXISTS pattern as the rest of the
 // schema, so an existing data.db picks it up on the next boot with no migration
@@ -147,15 +204,27 @@ app.post('/api/admin/roster-lock', (req, res) => {
 // Import + versioning are shared with tools/apply-trip-data.js via tools/lib/trip-store.js. ──
 const { ensureTripConfigTable, importTripConfig } = require('./tools/lib/trip-store.js');
 ensureTripConfigTable(db);
-// Boot migration: first start after this upgrade seeds version 1 from the inline
-// trip-data block, so existing deployments keep their trip with zero manual steps.
+// Boot migration: an empty trip_config is seeded with version 1 on start.
+// Source, in order: trip-seed.json next to this file (what
+// tools/apply-trip-data.js writes — it lives OUTSIDE public/, so the family's
+// trip is never a static file anyone can download), else the inline trip-data
+// block in public/index.html (the synthetic sample).
 try {
   if (!db.prepare('SELECT COUNT(*) AS c FROM trip_config').get().c) {
-    const _html = fs.readFileSync(path.join(__dirname, 'public', 'index.html'), 'utf8');
-    const _m = _html.match(/<script type="application\/json" id="trip-data">\s*([\s\S]*?)<\/script>/);
+    const _seedFile = path.join(__dirname, 'trip-seed.json');
+    let _json, _from;
+    if (fs.existsSync(_seedFile)) {
+      _json = JSON.parse(fs.readFileSync(_seedFile, 'utf8'));
+      _from = 'trip-seed.json';
+    } else {
+      const _html = fs.readFileSync(path.join(__dirname, 'public', 'index.html'), 'utf8');
+      const _m = _html.match(/<script type="application\/json" id="trip-data">\s*([\s\S]*?)<\/script>/);
+      _json = JSON.parse(_m[1]);
+      _from = 'the inline trip-data block';
+    }
     db.prepare('INSERT INTO trip_config (json, version, updated_by) VALUES (?, 1, ?)')
-      .run(JSON.stringify(JSON.parse(_m[1])), 'boot-seed');
-    console.log('trip_config: seeded version 1 from the inline trip-data block');
+      .run(JSON.stringify(_json), 'boot-seed');
+    console.log('trip_config: seeded version 1 from ' + _from);
   }
 } catch (e) { console.error('trip_config boot seed failed:', e.message); }
 
@@ -188,9 +257,10 @@ const plannerNames = () => {
 app.get('/api/trip', (req, res) => {
   const t = activeTrip();
   if (!t) return res.status(404).json({ error: 'No trip configured' });
-  res.json(t);
+  res.set('Cache-Control', 'private, no-store'); // the answer depends on who asks
+  res.json(readerOf(req) ? t : tripSummary(t));
 });
-app.get('/api/trip/export', (req, res) => {
+app.get('/api/trip/export', requireReader, (req, res) => {
   const t = activeTrip();
   if (!t) return res.status(404).json({ error: 'No trip configured' });
   res.setHeader('Content-Disposition', 'attachment; filename="trip-data.json"');
@@ -302,7 +372,8 @@ app.post('/api/admin/reset-pin', (req, res) => {
   const name = (req.body || {}).name;
   if (!allowedNames().includes(name)) return res.status(400).json({ error: 'Unknown name' });
   const out = _adminClearCred(name);
-  res.json({ ok: true, name, hadPin: out.hadPin, tokensRevoked: out.tokensRevoked,
+  delete LOGIN_FAILS[name]; // a forgotten PIN usually comes with a lockout — lift it too
+  res.json({ ok: true, name, hadPin: out.hadPin, tokensRevoked: out.tokensRevoked, lockoutCleared: true,
     message: 'PIN cleared — ' + name + ' sets a fresh PIN at next sign-in. Their votes, notes and lists are untouched.' });
 });
 
@@ -424,6 +495,17 @@ app.get('/api/users', (req, res) => {
   res.json({ registered, locked });
 });
 
+// Sign out THIS device (v0.24.0): the token presented is deleted, so a copy of
+// it left on a shared phone or in a browser profile stops working. Other
+// devices of the same traveler keep their own tokens. Behind the auth
+// middleware like every write, so only a valid token can revoke itself.
+app.post('/api/logout', (req, res) => {
+  const tok = req.get('X-Auth-Token');
+  db.prepare('DELETE FROM user_tokens WHERE token = ?').run(tok);
+  db.prepare("UPDATE users SET token = NULL WHERE token = ?").run(tok);
+  res.json({ ok: true });
+});
+
 // Session check for restore-on-boot: trusts the token only (GETs skip the auth middleware).
 app.get('/api/me', (req, res) => {
   const tok = req.get('X-Auth-Token');
@@ -485,7 +567,7 @@ app.get('/api/sso', (req, res) => {
   res.json({ ok: true, token, name });
 });
 
-app.get('/api/interests', (req, res) => {
+app.get('/api/interests', requireReader, (req, res) => {
   const rows = db.prepare('SELECT * FROM interests').all();
   const result = {}; rows.forEach(r => { result[r.activity_id] = JSON.parse(r.names); });
   res.json(result);
@@ -539,7 +621,7 @@ app.post('/api/interests', (req, res) => {
   res.json({ ok: true });
 });
 
-app.get('/api/flights', (req, res) => {
+app.get('/api/flights', requireReader, (req, res) => {
   const rows = db.prepare('SELECT * FROM flight_status').all();
   const result = {}; rows.forEach(r => { result[r.flight_id] = { status: r.status, checked: r.checked_at }; });
   res.json(result);
@@ -547,7 +629,9 @@ app.get('/api/flights', (req, res) => {
 app.post('/api/flights', (req, res) => {
   const { flightId, status } = req.body;
   if (!flightId || !status) return res.status(400).json({ error: 'Invalid' });
-  const checked = new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' });
+  // ISO instant (v0.24.0); the app shows it in the trip's own time zone. Rows
+  // written before hold a ready-made Chicago-time string and still display.
+  const checked = new Date().toISOString();
   db.prepare(`INSERT INTO flight_status (flight_id, status, checked_at, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)
     ON CONFLICT(flight_id) DO UPDATE SET status=excluded.status, checked_at=excluded.checked_at, updated_at=CURRENT_TIMESTAMP`
   ).run(flightId, status, checked);
@@ -559,7 +643,7 @@ app.post('/api/flights', (req, res) => {
 // before authorship was enforced) are planner-only.
 const _mayDelete = (actor, owner) => (owner != null && owner === actor) || plannerNames().includes(actor);
 
-app.get('/api/notes', (req, res) => {
+app.get('/api/notes', requireReader, (req, res) => {
   res.json(db.prepare('SELECT * FROM notes ORDER BY created_at DESC LIMIT 50').all()); 
 });
 // The author is the token holder — a body `author` is accepted (the shipped
@@ -579,7 +663,7 @@ app.delete('/api/notes/:id', (req, res) => {
 });
 
 // ── SUGGESTIONS (per-day third-party links the family pastes) ───────────────
-app.get('/api/suggestions', (req, res) => {
+app.get('/api/suggestions', requireReader, (req, res) => {
   res.json(db.prepare('SELECT * FROM suggestions ORDER BY created_at ASC').all()); 
 });
 app.post('/api/suggestions', (req, res) => {
@@ -596,7 +680,7 @@ app.delete('/api/suggestions/:id', (req, res) => {
 });
 
 // ── RESERVATIONS ────────────────────────────────────────
-app.get('/api/reservations', (req, res) => {
+app.get('/api/reservations', requireReader, (req, res) => {
   res.json(db.prepare('SELECT * FROM reservations ORDER BY created_at ASC').all()); 
 });
 app.post('/api/reservations', (req, res) => {
@@ -628,7 +712,7 @@ app.delete('/api/reservations/:id', (req, res) => {
 });
 
 // ── PACKING LIST ──────────────────────────────────────
-app.get('/api/packing', (req, res) => {
+app.get('/api/packing', requireReader, (req, res) => {
   res.json(db.prepare('SELECT * FROM packing ORDER BY created_at ASC').all()); 
 });
 app.post('/api/packing', (req, res) => {
@@ -641,7 +725,11 @@ app.post('/api/packing', (req, res) => {
 app.post('/api/packing/:id/toggle', (req, res) => {
   const row = db.prepare('SELECT done FROM packing WHERE id = ?').get(req.params.id);
   if (!row) return res.status(404).json({ error: 'Not found' });
-  db.prepare('UPDATE packing SET done = ? WHERE id = ?').run(row.done ? 0 : 1, req.params.id);
+  // v0.24.0 clients send the state they want ({done: 0|1}), so a replayed
+  // write can't flip it back; an older client (or queued write) sends nothing
+  // and gets the classic flip.
+  const want = req.body && (req.body.done === 0 || req.body.done === 1 || typeof req.body.done === 'boolean') ? (req.body.done ? 1 : 0) : (row.done ? 0 : 1);
+  db.prepare('UPDATE packing SET done = ? WHERE id = ?').run(want, req.params.id);
   res.json({ ok: true });
 });
 app.delete('/api/packing/:id', (req, res) => {
@@ -666,7 +754,7 @@ try { db.exec(`UPDATE reservations SET created_by = (
 ) WHERE created_by IS NULL`); } catch (e) {}
 // (template: no trip-specific seed data)
 const PLANNERS = ["Alex", "Sam", "Jordan", "Riley", "Casey"]; // fallback only — see plannerNames()
-app.get('/api/schedule', (req, res) => {
+app.get('/api/schedule', requireReader, (req, res) => {
   res.json(db.prepare('SELECT * FROM day_schedule WHERE moved_to IS NULL ORDER BY day_id ASC, time_text ASC, id ASC').all());
 });
 app.post('/api/schedule', (req, res) => {
@@ -870,8 +958,8 @@ function cleanReason(required, reasonCode, reasonNote) {
 }
 
 // Scheduled items for one traveler (rows whose who-list includes them) + their
-// saved answers. Public GET, same as /api/interests — writes are what need a token.
-app.get('/api/review/items', (req, res) => {
+// saved answers. Signed-in readers only (v0.24.0), like every family-data GET.
+app.get('/api/review/items', requireReader, (req, res) => {
   const name = String(req.query.name || '');
   if (!allowedNames().includes(name)) return res.status(400).json({ error: 'Unknown name' });
   const items = db.prepare('SELECT * FROM day_schedule WHERE moved_to IS NULL ORDER BY day_id ASC, time_text ASC, id ASC').all()

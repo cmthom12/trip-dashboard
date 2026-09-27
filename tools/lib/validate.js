@@ -151,6 +151,10 @@ function validateTripData(d) {
   if (new Set(famNames).size !== famNames.length) err('Traveler names in family are not unique');
   else if (famNames.length) ok('family: ' + famNames.length + ' travelers (' + famNames.join(', ') + ')');
 
+  // ── units (optional top-level key, v0.24.0): weather in °C or °F ──────────
+  if (d.units !== undefined && d.units !== 'C' && d.units !== 'F')
+    warn('"units" should be "C" or "F" (got ' + JSON.stringify(d.units) + ') — the weather card shows °F unless it is exactly "C"');
+
   // ── planners (optional top-level key, used by the import flow) ─────────────
   // No output at all when the key is absent, so pre-existing inputs print identically.
   if (d.planners !== undefined) {

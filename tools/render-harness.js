@@ -78,7 +78,9 @@ const CAPTURE = ['TRIP', 'DAYS', 'FAMILY', 'CAT', 'PLANNERS',
   'StarRow', 'TripMap', 'WeatherChip',
   'DietaryNote', 'dietaryFor', 'myDietary',
   'safeHttpUrl', 'extLink', 'flushOutbox', 'OUTBOX_KEY',
-  'safeColor', 'mapEsc', 'linkify', 'obRestampToken', 'qfetch'];
+  'safeColor', 'mapEsc', 'linkify', 'obRestampToken', 'qfetch', 'TRIP_IS_SHELL', 'authGet',
+  'readDataCache', 'saveDataCache', 'clearDataCache',
+  'TEMP_UNIT', 'fmtChecked', 'daysFromToday', 'DEFAULT_TZ'];
 
 function block(tag, id) {
   const open = '<script type="' + tag + '" id="' + id + '">';
@@ -242,7 +244,18 @@ if (require.main === module && process.env.TRIP_EMIT_CARDS === '1') {
   process.exit(0);
 }
 
-if (require.main === module && process.env.TRIP_EMIT_POPUPS !== '1' && process.env.TRIP_EMIT_CARDS !== '1') {
+// ── child mode: a sign-in shell (v0.24.0) — does it load, and does the sign-in
+// screen list the travelers? The bootstrap builds exactly this shape from the
+// anonymous /api/trip summary.
+if (require.main === module && process.env.TRIP_EMIT_LOGIN === '1') {
+  const X = sandbox.__X;
+  let loginText = '', err = '';
+  try { loginText = text(X.Login({ onLogin() {} })); } catch (e) { err = e.message; }
+  process.stdout.write(JSON.stringify({ shell: X.TRIP_IS_SHELL === true, family: X.FAMILY || [], loginText, err, unit: X.TEMP_UNIT }));
+  process.exit(0);
+}
+
+if (require.main === module && process.env.TRIP_EMIT_POPUPS !== '1' && process.env.TRIP_EMIT_CARDS !== '1' && process.env.TRIP_EMIT_LOGIN !== '1') {
   const X = sandbox.__X;
   console.log('root      ' + ROOT);
   console.log('trip      ' + (X.TRIP && X.TRIP.trip && X.TRIP.trip.title));
@@ -400,7 +413,7 @@ if (require.main === module && process.env.TRIP_EMIT_POPUPS !== '1' && process.e
   // caller's shell must not switch a child into the wrong mode.
   const childEnv = extra => {
     const e = Object.assign({}, process.env);
-    delete e.TRIP_EMIT_CARDS; delete e.TRIP_EMIT_POPUPS; delete e.TRIP_NESTED; delete e.TRIP_LIVE_ROWS;
+    delete e.TRIP_EMIT_CARDS; delete e.TRIP_EMIT_POPUPS; delete e.TRIP_EMIT_LOGIN; delete e.TRIP_NESTED; delete e.TRIP_LIVE_ROWS;
     return Object.assign(e, extra);
   };
   const renderCards = trip => {
@@ -457,6 +470,82 @@ if (require.main === module && process.env.TRIP_EMIT_POPUPS !== '1' && process.e
       res.loaded && res.errors.length === 0 && days.length === dayCount &&
       days.every(t => factVals.some(f => String(t.PhraseCard || '').includes(f))));
   }
+
+  // v0.24.0 — a sign-in shell (anonymous summary + emptied plan sections, the
+  // shape the bootstrap builds) loads, flags itself, and lists the travelers.
+  {
+    const tr = X.TRIP || {};
+    const shell = {
+      __shell: true, trip: Object.assign({}, tr.trip || {}, { photosUrl: '' }),
+      family: (tr.family || []).map(f => ({ name: f.name, color: f.color })),
+      categories: tr.categories || {}, days: [], dayCoords: {}, flights: [], reservationsSeed: [],
+      essentials: [], embassies: [], enrichments: {}, mustDos: [], tz: tr.tz
+    };
+    const t = fs.mkdtempSync(path.join(os.tmpdir(), 'render-harness-'));
+    let out = {};
+    try {
+      const f = path.join(t, 'shell.json');
+      fs.writeFileSync(f, JSON.stringify(shell));
+      const r = cp.spawnSync(process.execPath, [__filename, f, ROOT], { env: childEnv({ TRIP_EMIT_LOGIN: '1' }), encoding: 'utf8', timeout: 60000 });
+      out = r.status === 0 && r.stdout ? JSON.parse(r.stdout) : { err: 'child exited ' + r.status };
+    } catch (e) { out = { err: e.message }; } finally { try { fs.rmSync(t, { recursive: true, force: true }); } catch (e) {} }
+    const names = (tr.family || []).map(f => f.name);
+    ck('sign-in shell: app loads, knows it is a shell, and the sign-in screen lists every traveler' + (out.err ? ' [' + out.err + ']' : ''),
+      !out.err && out.shell === true && names.length > 0 && names.every(n => String(out.loginText || '').includes(n)));
+  }
+  ck('full trip is not flagged as a shell', X.TRIP_IS_SHELL === false);
+  {
+    const tr = JSON.parse(JSON.stringify(X.TRIP || {}));
+    tr.units = 'C';
+    const t = fs.mkdtempSync(path.join(os.tmpdir(), 'render-harness-'));
+    let out = {};
+    try {
+      const f = path.join(t, 'celsius.json');
+      fs.writeFileSync(f, JSON.stringify(tr));
+      const r = cp.spawnSync(process.execPath, [__filename, f, ROOT], { env: childEnv({ TRIP_EMIT_LOGIN: '1' }), encoding: 'utf8', timeout: 60000 });
+      out = r.status === 0 && r.stdout ? JSON.parse(r.stdout) : {};
+    } catch (e) { out = {}; } finally { try { fs.rmSync(t, { recursive: true, force: true }); } catch (e) {} }
+    ck('weather: a trip with "units": "C" shows °C', out.unit === 'C');
+  }
+  ck('authGet exists (family-data reads carry the token)', typeof X.authGet === 'function');
+
+  // v0.24.0 weather card: no forecast call outside the service's 16-day window
+  // (those only answer 400), none for past days, and the trip's unit.
+  if (typeof X.WeatherChip === 'function') {
+    const ymd = off => { const d = new Date(); d.setDate(d.getDate() + off); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
+    const realFetch = sandbox.fetch, calls = [];
+    sandbox.fetch = url => { calls.push(String(url)); return Promise.resolve({ ok: false, json: () => Promise.resolve({}) }); };
+    React.__runEffects = true;
+    const callsFor = off => { const n = calls.length; X.WeatherChip({ ll: [40, -90], date: ymd(off) }); return calls.slice(n); };
+    const far = callsFor(40), past = callsFor(-3), near = callsFor(2), edge = callsFor(15), over = callsFor(16);
+    React.__runEffects = false;
+    sandbox.fetch = realFetch;
+    ck('weather: no forecast call for a day 40 days out', far.length === 0);
+    ck('weather: no forecast call for a past day', past.length === 0);
+    ck('weather: a day 2 days out is fetched once', near.length === 1 && /open-meteo/.test(near[0] || ''));
+    ck('weather: window edge — day +15 fetched, day +16 not', edge.length === 1 && over.length === 0);
+    ck('weather: unit follows the trip (sample has none → fahrenheit)', X.TEMP_UNIT === 'F' && /temperature_unit=fahrenheit/.test(near[0] || ''));
+  } else ck('WeatherChip exists', false);
+  if (typeof X.fmtChecked === 'function') {
+    const iso = '2026-10-17T15:04:00.000Z';
+    const shown = X.fmtChecked(iso);
+    const want = new Date(iso).toLocaleString('en-US', { timeZone: X.DEFAULT_TZ, month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' });
+    ck('flight "last checked": an ISO stamp is shown in the trip time zone', shown === want && shown !== iso);
+    ck('flight "last checked": an older ready-made string is shown as-is', X.fmtChecked('10/17/2026, 10:04:00 AM') === '10/17/2026, 10:04:00 AM');
+  } else ck('fmtChecked exists', false);
+
+  // v0.24.0 offline shell: the lists snapshot belongs to one traveler.
+  if (typeof X.saveDataCache === 'function' && typeof X.readDataCache === 'function' && typeof X.clearDataCache === 'function') {
+    const who = (X.FAMILY || [])[0] || 'Alex', other = (X.FAMILY || [])[1] || 'Sam';
+    X.saveDataCache(who, { notes: [{ id: 1, message: 'snapshot probe' }] });
+    X.saveDataCache(who, { packing: [{ id: 2, item: 'second part' }] });
+    const mine = X.readDataCache(who);
+    ck('lists snapshot: saved parts merge and read back for the same traveler',
+      !!mine && mine.notes && mine.notes[0].message === 'snapshot probe' && mine.packing && mine.packing[0].item === 'second part');
+    ck('lists snapshot: another traveler on the same device never sees it', X.readDataCache(other) === null);
+    X.clearDataCache();
+    ck('lists snapshot: cleared at sign-out', X.readDataCache(who) === null);
+  } else ck('lists snapshot helpers exist', false);
 
   // v0.23.1 — the whole harness must pass on a real-shaped roster, not only on
   // the sample's names. Rename every traveler (synthetic replacements) and run

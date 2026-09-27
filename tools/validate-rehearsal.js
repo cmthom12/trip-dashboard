@@ -80,6 +80,17 @@ for (const v of ['2026-13', '2026-00', '2026-9', 'Sep 2026', '2026-09-32', '2026
   ck('verified warning names both accepted shapes', !!w && /2026-08-11/.test(w.msg) && /"2026-08"/.test(w.msg));
 }
 
+// ── units (v0.24.0) ────────────────────────────────────────────────────────
+for (const u of ['C', 'F']) {
+  const d = clone(); d.units = u;
+  ck('units ' + JSON.stringify(u) + ': accepted', warnsAbout(run(d), /"units"/).length === 0);
+}
+for (const u of ['celsius', 'c', 1]) {
+  const d = clone(); d.units = u;
+  ck('units ' + JSON.stringify(u) + ': warned', warnsAbout(run(d), /"units" should be "C" or "F"/).length === 1);
+}
+ck('no units key: nothing said', warnsAbout(run(clone()), /"units"/).length === 0);
+
 console.log('');
 console.log('RESULT: ' + pass + ' PASS, ' + fail + ' FAIL');
 process.exit(fail ? 1 : 0);

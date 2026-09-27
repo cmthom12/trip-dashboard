@@ -122,7 +122,7 @@ API="localhost:$PORT_A"
 # the family and planners pinned to the original five: Morgan signs in, votes
 # and writes like anyone else but holds no planner powers.
 echo "==> fixture: import the sample trip plus Morgan (non-planner)"
-curl -s "$API/api/trip/export" > "$TMP/trip0.json"
+curl -s "$API/api/trip/export" -H "X-Admin-Key: $ADMIN_KEY" > "$TMP/trip0.json"
 node -e '
   const fs = require("fs");
   const t = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
@@ -153,6 +153,95 @@ auth() { # auth <token> <curl args...>
 }
 
 # ── H2: /api/interests merges server-side, per caller ───────────────────────
+# Family-data reads need a signed-in reader since v0.24.0. Every read-back
+# below goes through a traveler's token, so a "not present" check can only
+# pass on a real 200 list — never on a 401 that happens to lack the text.
+# Each read-back must be a real 200: any other status is logged to $RD_BAD and
+# fails the "every read-back returned 200" row at the end (a 401 body never
+# contains the text a check looks for, so it could otherwise pass silently).
+RD_BAD="$TMP/rd-not-200"; : > "$RD_BAD"
+rd() {
+  local o c
+  o="$(curl -s -w '\n%{http_code}' -H "X-Auth-Token: $TOK_ALEX" "$@")"; c="${o##*$'\n'}"
+  [ "$c" = 200 ] || echo "$* → $c" >> "$RD_BAD"
+  printf '%s' "${o%$'\n'*}"
+}
+
+# ── v0.24.0: reads are for signed-in travelers ──────────────────────────────
+echo "==> R1: family-data reads refuse anonymous callers"
+for ep in interests flights notes suggestions reservations packing schedule "review/items?name=Alex" trip/export; do
+  C="$(code "$API/api/$ep")"
+  [ "$C" = 401 ]; ck $? "anonymous GET /api/$ep → 401 ($C)"
+done
+for ep in interests notes reservations schedule; do
+  C="$(code -H 'X-Auth-Token: not-a-real-token' "$API/api/$ep")"
+  [ "$C" = 401 ]; ck $? "made-up token GET /api/$ep → 401 ($C)"
+done
+for ep in interests flights notes suggestions reservations packing schedule "review/items?name=Alex"; do
+  C="$(code -H "X-Auth-Token: $TOK_MORGAN" "$API/api/$ep")"
+  [ "$C" = 200 ]; ck $? "signed-in traveler GET /api/$ep → 200 ($C)"
+done
+C="$(code -H "X-Admin-Key: $ADMIN_KEY" "$API/api/reservations")"
+[ "$C" = 200 ]; ck $? "operator (admin key) GET /api/reservations → 200 ($C)"
+
+echo "==> R2: /api/trip gives anonymous callers a summary only"
+ANON="$(curl -s "$API/api/trip")"
+printf '%s' "$ANON" | node -e '
+  let s = ""; process.stdin.on("data", d => s += d).on("end", () => {
+    const j = JSON.parse(s);
+    const leaks = ["days", "flights", "reservationsSeed", "essentials", "embassies", "enrichments", "mustDos", "dayCoords", "categories"].filter(k => k in j);
+    const famKeys = [...new Set((j.family || []).flatMap(f => Object.keys(f)))].sort().join(",");
+    const ok = j.summary === true && leaks.length === 0 && (j.family || []).length > 0 &&
+      famKeys === "color,name" && !("photosUrl" in (j.trip || {})) && typeof (j.trip || {}).title === "string";
+    if (!ok) console.error("summary leaks or is malformed:", leaks, famKeys);
+    process.exit(ok ? 0 : 1);
+  });'
+ck $? "anonymous GET /api/trip → summary: title/dates/names+colours only, no plan, no interests or dietary"
+curl -s -H "X-Auth-Token: $TOK_MORGAN" "$API/api/trip" | grep -q '"days":\['
+ck $? "signed-in GET /api/trip → the full trip (days present)"
+curl -s -H "X-Admin-Key: $ADMIN_KEY" "$API/api/trip" | grep -q '"days":\['
+ck $? "admin-key GET /api/trip → the full trip (days present)"
+curl -s -H "X-Admin-Key: wrong-key" "$API/api/trip" | grep -q '"summary":true'
+ck $? "wrong admin key GET /api/trip → summary, not the full trip"
+C="$(code "$API/api/users")"; [ "$C" = 200 ]; ck $? "GET /api/users stays open for the sign-in screen ($C)"
+
+echo "==> R3: signing out revokes only that device's token (v0.24.0)"
+TOK_S1="$(login Sam 2222)"; TOK_S2="$(login Sam 2222)"
+[ -n "$TOK_S1" ] && [ -n "$TOK_S2" ] && [ "$TOK_S1" != "$TOK_S2" ]; ck $? "Sam signed in on two devices (two different tokens)"
+C="$(code -X POST -H "X-Auth-Token: $TOK_S1" "$API/api/logout")"
+[ "$C" = 200 ]; ck $? "POST /api/logout with device 1's token → 200 ($C)"
+C="$(code -H "X-Auth-Token: $TOK_S1" "$API/api/notes")"
+[ "$C" = 401 ]; ck $? "device 1's token no longer reads after sign-out ($C)"
+C="$(code -X POST -H "X-Auth-Token: $TOK_S1" -H 'Content-Type: application/json' -d '{"message":"after logout"}' "$API/api/notes")"
+[ "$C" = 401 ]; ck $? "…nor writes ($C)"
+C="$(code -H "X-Auth-Token: $TOK_S2" "$API/api/notes")"
+[ "$C" = 200 ]; ck $? "device 2's token still works ($C)"
+C="$(code -X POST "$API/api/logout")"
+[ "$C" = 401 ]; ck $? "POST /api/logout with no token → 401 ($C)"
+TOK_SAM="$(login Sam 2222)"
+
+echo "==> R4: flight checks are stamped as an ISO time (v0.24.0)"
+auth "$TOK_ALEX" -X POST "$API/api/flights" -d '{"flightId":"f-probe","status":"On time"}' >/dev/null
+rd "$API/api/flights" | grep -q '"f-probe":{"status":"On time","checked":"20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]T'
+ck $? "flight status stamped with an ISO timestamp (shown in the trip's time zone by the app)"
+
+echo "==> R5: token-dependent reads are never cached (v0.24.0)"
+cc() { curl -s -D - -o /dev/null "$@" | tr -d '\r' | grep -i '^cache-control:'; }
+cc -H "X-Auth-Token: $TOK_ALEX" "$API/api/trip" | grep -qi 'private, no-store'; ck $? "signed-in GET /api/trip sends Cache-Control: private, no-store"
+cc "$API/api/trip" | grep -qi 'private, no-store';                             ck $? "anonymous GET /api/trip (the summary) too"
+cc -H "X-Auth-Token: $TOK_ALEX" "$API/api/notes" | grep -qi 'private, no-store'; ck $? "a gated read (GET /api/notes) too"
+
+echo "==> R6: packing toggle sets the state the client asks for (v0.24.0)"
+PK="$(auth "$TOK_ALEX" -X POST "$API/api/packing" -d '{"item":"toggle probe"}' | sed -n 's/.*"id":\([0-9]*\).*/\1/p')"
+pk_done() { rd "$API/api/packing" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const r=JSON.parse(s).find(p=>String(p.id)===process.argv[1]);console.log(r?r.done:"missing")})' "$PK"; }
+auth "$TOK_ALEX" -X POST "$API/api/packing/$PK/toggle" -d '{"done":1}' >/dev/null
+auth "$TOK_ALEX" -X POST "$API/api/packing/$PK/toggle" -d '{"done":1}' >/dev/null
+[ -n "$PK" ] && [ "$(pk_done)" = 1 ]; ck $? "{done:1} sent twice (a replay) leaves the item packed, not flipped back"
+auth "$TOK_ALEX" -X POST "$API/api/packing/$PK/toggle" -d '{"done":0}' >/dev/null
+[ "$(pk_done)" = 0 ]; ck $? "{done:0} unpacks it"
+auth "$TOK_ALEX" -X POST "$API/api/packing/$PK/toggle" >/dev/null
+[ "$(pk_done)" = 1 ]; ck $? "no body (an older client) still flips"
+
 echo "==> H2: interleaved votes on one activity"
 ACT="d1_dinner"
 # Each client posts the full array it believes in — exactly what the shipped
@@ -160,14 +249,14 @@ ACT="d1_dinner"
 # so it lists only Sam. Last-writer-wins would drop Alex here.
 auth "$TOK_ALEX" -X POST "$API/api/interests" -d "{\"activityId\":\"$ACT\",\"names\":[\"Alex|3\"]}" >/dev/null
 auth "$TOK_SAM"  -X POST "$API/api/interests" -d "{\"activityId\":\"$ACT\",\"names\":[\"Sam|2\"]}" >/dev/null
-GOT="$(curl -s "$API/api/interests")"
+GOT="$(rd "$API/api/interests")"
 printf '%s' "$GOT" | grep -q 'Alex|3' && printf '%s' "$GOT" | grep -q 'Sam|2'
 ck $? "two users vote in interleaved requests → both stars present afterward"
 
 echo "==> H2: a stale full-array body cannot erase another user's star"
 # Alex re-posts an array that lists only Alex — a tab that never saw Sam's vote.
 auth "$TOK_ALEX" -X POST "$API/api/interests" -d "{\"activityId\":\"$ACT\",\"names\":[\"Alex|1\"]}" >/dev/null
-GOT="$(curl -s "$API/api/interests")"
+GOT="$(rd "$API/api/interests")"
 printf '%s' "$GOT" | grep -q 'Sam|2'
 ck $? "stale body from Alex listing only Alex leaves Sam's existing star intact"
 printf '%s' "$GOT" | grep -q 'Alex|1'
@@ -175,7 +264,7 @@ ck $? "…and Alex's own star is updated to the value they sent"
 
 echo "==> H2: omitting yourself withdraws only your own vote"
 auth "$TOK_ALEX" -X POST "$API/api/interests" -d "{\"activityId\":\"$ACT\",\"names\":[]}" >/dev/null
-GOT="$(curl -s "$API/api/interests")"
+GOT="$(rd "$API/api/interests")"
 printf '%s' "$GOT" | grep -q 'Alex|'
 [ $? -ne 0 ]; ck $? "caller absent from the body → their entry is removed"
 printf '%s' "$GOT" | grep -q 'Sam|2'
@@ -185,20 +274,20 @@ echo "==> H2: a body naming someone else cannot vote for them"
 # Alex forges a body containing only Sam at 3 stars. Sam's stored entry must not
 # move, and Alex must not gain one.
 auth "$TOK_ALEX" -X POST "$API/api/interests" -d "{\"activityId\":\"$ACT\",\"names\":[\"Sam|3\"]}" >/dev/null
-GOT="$(curl -s "$API/api/interests")"
+GOT="$(rd "$API/api/interests")"
 printf '%s' "$GOT" | grep -q 'Sam|2'
 ck $? "a forged entry for another user is ignored (Sam still 2 stars, not 3)"
 
 echo "==> H2: a first vote on an activity with no row yet"
 auth "$TOK_SAM" -X POST "$API/api/interests" -d '{"activityId":"d2_museum","names":["Sam|3"]}' >/dev/null
-curl -s "$API/api/interests" | grep -q 'd2_museum'
+rd "$API/api/interests" | grep -q 'd2_museum'
 ck $? "row does not exist yet → created with the caller's entry only"
 
 # ── H2.1: the stars half is clamped server-side to the UI's 1..3 ────────────
 echo "==> H2.1: stars are clamped server-side"
 stars_stored() { # stars_stored <activity> <entry-json> — prints the stored entry for Sam
   auth "$TOK_SAM" -X POST "$API/api/interests" -d "{\"activityId\":\"$1\",\"names\":[$2]}" >/dev/null
-  curl -s "$API/api/interests" | grep -o '"d2_museum":\[[^]]*\]' | grep -o '"Sam[^"]*"'
+  rd "$API/api/interests" | grep -o '"d2_museum":\[[^]]*\]' | grep -o '"Sam[^"]*"'
 }
 [ "$(stars_stored d2_museum '"Sam|9"')" = '"Sam|3"' ];   ck $? "stars above the UI range (9) are stored as 3"
 [ "$(stars_stored d2_museum '"Sam|0"')" = '"Sam|1"' ];   ck $? "stars below the UI range (0) are stored as 1"
@@ -212,7 +301,7 @@ echo "==> H3: notes authorship and delete ownership"
 NID="$(auth "$TOK_ALEX" -X POST "$API/api/notes" -d '{"author":"Sam","message":"forged-author probe"}' \
   | sed -n 's/.*"id":\([0-9]*\).*/\1/p')"
 [ -n "$NID" ]; ck $? "note created"
-curl -s "$API/api/notes" | grep -q '"author":"Alex","message":"forged-author probe"'
+rd "$API/api/notes" | grep -q '"author":"Alex","message":"forged-author probe"'
 ck $? "note POST with a forged body author lands as the token user, not the body"
 
 # The ownership trio, all over HTTP against the real middleware and route:
@@ -220,11 +309,11 @@ ck $? "note POST with a forged body author lands as the token user, not the body
 # delete; a planner may delete anyone's.
 DCODE="$(code -X DELETE -H "X-Auth-Token: $TOK_MORGAN" "$API/api/notes/$NID")"
 [ "$DCODE" = 403 ]; ck $? "non-owner non-planner (Morgan) delete of Alex's note → 403 ($DCODE)"
-curl -s "$API/api/notes" | grep -q 'forged-author probe'
+rd "$API/api/notes" | grep -q 'forged-author probe'
 ck $? "…and the note survives the refused delete"
 DCODE="$(curl -s -o /dev/null -w '%{http_code}' -X DELETE -H "X-Auth-Token: $TOK_CASEY" "$API/api/notes/$NID")"
 [ "$DCODE" = 200 ]; ck $? "planner delete of someone else's note succeeds ($DCODE)"
-curl -s "$API/api/notes" | grep -q 'forged-author probe'
+rd "$API/api/notes" | grep -q 'forged-author probe'
 [ $? -ne 0 ]; ck $? "…and the note is gone"
 
 NID2="$(auth "$TOK_ALEX" -X POST "$API/api/notes" -d '{"message":"owner-delete probe"}' \
@@ -242,24 +331,24 @@ SG1="$(auth "$TOK_SAM" -X POST "$API/api/suggestions" \
   -d '{"dayId":"day1","author":"Alex","label":"probe","url":"https://example.com"}' \
   | sed -n 's/.*"id":\([0-9]*\).*/\1/p')"
 [ -n "$SG1" ]; ck $? "suggestion created (id $SG1)"
-curl -s "$API/api/suggestions" | grep -q '"author":"Sam"'
+rd "$API/api/suggestions" | grep -q '"author":"Sam"'
 ck $? "suggestion POST with a forged body author lands as the token user"
 
 # Same trio as notes, over the wire.
 DCODE="$(code -X DELETE -H "X-Auth-Token: $TOK_MORGAN" "$API/api/suggestions/$SG1")"
 [ "$DCODE" = 403 ]; ck $? "non-owner non-planner (Morgan) delete of Sam's suggestion → 403 ($DCODE)"
-curl -s "$API/api/suggestions" | grep -q "\"id\":$SG1,"
+rd "$API/api/suggestions" | grep -q "\"id\":$SG1,"
 ck $? "…and the suggestion survives the refused delete"
 DCODE="$(code -X DELETE -H "X-Auth-Token: $TOK_SAM" "$API/api/suggestions/$SG1")"
 [ "$DCODE" = 200 ]; ck $? "owner delete of their own suggestion succeeds ($DCODE)"
-curl -s "$API/api/suggestions" | grep -q "\"id\":$SG1,"
+rd "$API/api/suggestions" | grep -q "\"id\":$SG1,"
 [ $? -ne 0 ]; ck $? "…and it is gone"
 SG2="$(auth "$TOK_SAM" -X POST "$API/api/suggestions" \
   -d '{"dayId":"day1","label":"planner-delete probe","url":"https://example.com/2"}' \
   | sed -n 's/.*"id":\([0-9]*\).*/\1/p')"
 DCODE="$(code -X DELETE -H "X-Auth-Token: $TOK_CASEY" "$API/api/suggestions/$SG2")"
 [ "$DCODE" = 200 ]; ck $? "planner delete of someone else's suggestion succeeds ($DCODE)"
-curl -s "$API/api/suggestions" | grep -q 'planner-delete probe'
+rd "$API/api/suggestions" | grep -q 'planner-delete probe'
 [ $? -ne 0 ]; ck $? "…and it is gone"
 
 # ── M2: an import that would strand votes is refused ────────────────────────
@@ -316,7 +405,7 @@ NEWID="$(auth "$TOK_CASEY" -X POST "$API/api/dayplan/move" \
   | sed -n 's/.*"id":\([0-9]*\).*/\1/p')"
 [ -n "$NEWID" ] && [ "$NEWID" != "$SID" ]; ck $? "item moved to day2 as a new row (id $NEWID)"
 
-ITEMS="$(curl -s "$API/api/review/items?name=Casey")"
+ITEMS="$(rd "$API/api/review/items?name=Casey")"
 # Checked against the `reviews` map specifically, not anywhere in the payload:
 # `items` always contains the new sched:<id>, so a substring match here would
 # pass even with the review still stranded on the tombstone.
@@ -430,6 +519,24 @@ J -X POST "$API/api/login" -d '{"name":"Jordan","pin":"7777"}' | grep -q '"token
 ck $? "the migrated user logs in again against the peppered hash"
 J -X POST "$API/api/login" -d '{"name":"Jordan","pin":"0000"}' | grep -q '"error":"Incorrect PIN"'
 ck $? "a wrong PIN is still refused after migration"
+
+echo "==> R7: an admin PIN reset also lifts a sign-in lockout (v0.24.0)"
+for _ in 1 2 3 4 5; do J -X POST "$API/api/login" -d '{"name":"Riley","pin":"0001"}' >/dev/null; done
+[ "$(code -X POST -H 'Content-Type: application/json' -d '{"name":"Riley","pin":"4444"}' "$API/api/login")" = 429 ]
+ck $? "five wrong PINs lock Riley out (429, even with the right PIN)"
+J -X POST "$API/api/admin/reset-pin" -H "X-Admin-Key: $ADMIN_KEY" -d '{"name":"Riley"}' | grep -q '"lockoutCleared":true'
+ck $? "admin reset-pin for Riley reports the lockout cleared"
+J -X POST "$API/api/login" -d '{"name":"Riley","pin":"4321"}' | grep -q '"token"'
+ck $? "…and Riley can sign in (set a fresh PIN) straight away"
+
+echo "==> R8: gated reads during the admin-key lockout answer 429, not 401 (v0.24.0)"
+for _ in 1 2 3 4 5; do code -H "X-Admin-Key: wrong-key" "$API/api/notes" >/dev/null; done
+C="$(code -H "X-Admin-Key: $ADMIN_KEY" "$API/api/notes")"
+[ "$C" = 429 ]; ck $? "after five wrong keys even the right key gets 429 on a read ($C)"
+C="$(code -H "X-Auth-Token: $TOK_CASEY" "$API/api/notes")"
+[ "$C" = 200 ]; ck $? "…while a signed-in traveler still reads normally ($C)"
+
+[ ! -s "$RD_BAD" ]; ck $? "every signed-in read-back in this run returned 200$( [ -s "$RD_BAD" ] && printf ' — not: %s' "$(tr '\n' ';' < "$RD_BAD")")"
 
 echo
 echo "== api-rehearsal summary =="

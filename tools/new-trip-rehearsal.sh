@@ -190,7 +190,7 @@ snap() { # snap → one hash over every file (content + listing) in the fake roo
 node -e '
 const fs=require("fs"); const h=fs.readFileSync(process.argv[1],"utf8");
 const T="<script type=\"application/json\" id=\"trip-data\">"; const i=h.indexOf(T)+T.length, j=h.indexOf("</"+"script>",i);
-const t=JSON.parse(h.slice(i,j)); t.tripName="Rehearsal Trip"; fs.writeFileSync(process.argv[2], JSON.stringify(t));
+const t=JSON.parse(h.slice(i,j)); t.tripName="Rehearsal Trip"; t.trip.title="Rehearsal Trip Title"; fs.writeFileSync(process.argv[2], JSON.stringify(t));
 ' "$ROOT/public/index.html" "$TMP/good.json"
 printf '{"tripName":"broken","family":"not-an-array","days":[]}' > "$TMP/bad.json"
 
@@ -258,7 +258,20 @@ grep -q "pm2 start ecosystem.config.js (cwd $APP)" "$LOG" && grep -q "pm2 save" 
 ck $? "pm2 start was BY ECOSYSTEM FILE from the app dir, then pm2 save; never by name"
 [ "$(grep -c 'pm2 restart trip-gamma' "$LOG")" = 2 ]; ck $? "deploy.sh ran twice: pass 1 (expected restart failure) + pass 2 (health gate)"
 has "expected first-deploy case"; ck $? "…and the run explained the expected pass-1 failure"
-has "Trip data installed into public/index.html"; ck $? "apply-trip-data.js ran on the fresh instance"
+has "Trip data installed into trip-seed.json"; ck $? "apply-trip-data.js ran on the fresh instance"
+# v0.24.0: the family's trip must never be a static file. It goes to
+# trip-seed.json beside server.js; the served page keeps the synthetic sample.
+[ -f "$APP/trip-seed.json" ] && [ ! -e "$APP/public/trip-seed.json" ] && grep -q '"Rehearsal Trip Title"' "$APP/trip-seed.json"
+ck $? "the trip was written to trip-seed.json next to server.js, not into public/"
+"$REAL_CURL" -s -o "$TMP/served.html" http://127.0.0.1:3804/
+[ -s "$TMP/served.html" ] && ! grep -q 'Rehearsal Trip' "$TMP/served.html" \
+  && [ "$(sha256sum < "$TMP/served.html")" = "$(sha256sum < "$ROOT/public/index.html")" ]
+ck $? "the SERVED page is byte-identical to the template's (sample only — the trip is nowhere in it)"
+[ "$("$REAL_CURL" -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3804/trip-seed.json)" = 404 ] \
+  && ! ls "$APP/public" | grep -q 'backup-'
+ck $? "trip-seed.json is not downloadable (404) and no install backup sits in public/"
+"$REAL_CURL" -s http://127.0.0.1:3804/api/trip | grep -q '"summary":true.*"title":"Rehearsal Trip Title"'
+ck $? "…yet the instance serves the trip: the database was seeded from trip-seed.json (anonymous summary shows its title)"
 [ -f "$NGX/sites-available/gamma" ] && grep -q "server_name gamma.trips.test;" "$NGX/sites-available/gamma" \
   && grep -q "proxy_pass http://127.0.0.1:3804;" "$NGX/sites-available/gamma" && grep -q "$LE/live/gamma.trips.test/fullchain.pem" "$NGX/sites-available/gamma"
 ck $? "nginx site: server_name, proxy_pass :3804 and the cert path are filled in"

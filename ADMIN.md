@@ -66,6 +66,9 @@ What you can do:
 - **Overview** — per traveler: registered or not, planner badge, last activity,
   vote/note/suggestion/packing counts; plus trip dates, database size, table row
   counts, and the backup files sitting next to `data.db`.
+- **Signing out** in the app (v0.24.0) cancels that device's session on the
+  server too, so a copy left on a shared phone stops working. Other devices of
+  the same traveler stay signed in.
 - **Reset PIN** — for the family member who forgot theirs. Clears their PIN and
   signs out their devices; the name simply registers a fresh PIN at next sign-in.
   Votes, notes, and lists are untouched.
@@ -81,11 +84,27 @@ What you can do:
   in (their data is retained); new names simply register at first login. Every
   import is kept as a version in the database, and **Export current** downloads
   the active trip JSON any time. Optional trip-JSON keys the import understands:
-  `"planners": ["Name", …]` (who may edit the Day Plan — everyone if absent) and
-  `"tz": "Europe/Rome"` (the trip's display timezone).
+  `"planners": ["Name", …]` (who may edit the Day Plan — everyone if absent),
+  `"tz": "Europe/Rome"` (the trip's display timezone) and `"units": "C"` (weather
+  in °C; °F if absent).
 
 Both destructive buttons require typing the traveler's name to confirm; Import
 shows a confirmation spelling out exactly what changes.
+
+**Reading trip data from a script (v0.24.0 and later).** Family data is only
+served to a reader: a signed-in traveler (`X-Auth-Token`) or you with the admin
+key. Without either, `GET /api/trip` returns a short summary (title, dates,
+theme, traveler names and colours) and the other family-data routes
+(`/api/reservations`, `/api/notes`, `/api/packing`, `/api/schedule`,
+`/api/interests`, `/api/flights`, `/api/suggestions`, `/api/review/items`,
+`/api/trip/export`) answer `401`. So a script that mirrors the live trip sends
+the key:
+
+```bash
+curl -s https://your-site/api/trip -H "X-Admin-Key: your-key" > live-trip.json
+```
+
+A wrong key on a read counts toward the same 5-tries lockout as the admin page.
 
 **Windows: copying the trip JSON to the clipboard.** Use PowerShell's
 `Set-Clipboard`, which preserves UTF-8:
