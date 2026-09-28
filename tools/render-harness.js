@@ -52,6 +52,8 @@
  *                                     // initial value deep-equals `init` gets
  *                                     // `value` instead. Consumed in call order,
  *                                     // one entry per match.
+ *   React.__setSpy = (init, v) => {}  // see what a setter was called with
+ *                                     // (keyed by that state's initial value)
  *   React.__runEffects = true         // run useEffect bodies (mount effects)
  *   React.__effectErrors              // messages from effects that threw
  *
@@ -73,7 +75,7 @@ const HTML = fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8');
 // Names lifted out of the app script into `X`. Missing ones come back undefined.
 const CAPTURE = ['TRIP', 'DAYS', 'FAMILY', 'CAT', 'PLANNERS',
   'MUSTDO_GROUPS', 'MUSTDO_ITEMS', 'MUSTDO_BY_ID', 'HAS_MUSTDOS',
-  'App', 'Countdown', 'DayPlanCard', 'DayStrip', 'FlightCard', 'IntChips', 'Login',
+  'App', 'Countdown', 'DayPlanCard', 'DayStrip', 'dayChipLines', 'focusAfterDelete', 'FlightCard', 'IntChips', 'Login',
   'MissionCard', 'MustDoSection', 'PhraseCard', 'PrintItinerary', 'ReviewTab',
   'StarRow', 'TripMap', 'WeatherChip',
   'DietaryNote', 'dietaryFor', 'myDietary',
@@ -112,13 +114,16 @@ const React = {
   // The app destructures the hooks once at load, so every knob must be consulted
   // at CALL time, not at definition time.
   useState: init => {
+    // setters do nothing unless a test installs React.__setSpy(init, value)
+    const set = v => { if (typeof React.__setSpy === 'function') React.__setSpy(init, v); };
     const oi = React.__stateOverrides.findIndex(o => deepEq(o.init, init));
-    if (oi >= 0) return [React.__stateOverrides.splice(oi, 1)[0].value, () => {}];
-    if (React.__forceOpen && init === false) return [true, () => {}];
-    if (React.__forceItem !== null && init === null) return [React.__forceItem, () => {}];
-    if (init === '' && React.__emptyStrQueue.length) return [React.__emptyStrQueue.shift(), () => {}];
-    return [typeof init === 'function' ? init() : init, () => {}];
+    if (oi >= 0) return [React.__stateOverrides.splice(oi, 1)[0].value, set];
+    if (React.__forceOpen && init === false) return [true, set];
+    if (React.__forceItem !== null && init === null) return [React.__forceItem, set];
+    if (init === '' && React.__emptyStrQueue.length) return [React.__emptyStrQueue.shift(), set];
+    return [typeof init === 'function' ? init() : init, set];
   },
+  __setSpy: null,
   __stateOverrides: [],
   __forceItem: null,
   __emptyStrQueue: [],

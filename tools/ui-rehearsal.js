@@ -20,6 +20,7 @@
  *   pack : a per-person packing row shows YOUR check and who has packed it;
  *          a shared row has one check; rows are checkboxes for screen
  *          readers and keyboards; groups follow the trip's own travelers.
+ *   chips: a day chip shows the whole day label ("Sat Sep 5" keeps 5).
  *   portal: when the family portal's hand-off fails, the sign-in screen says
  *          why (expired, or not on this trip) — and nothing for a visitor.
  *   a11y : every button on every tab has a name a screen reader can read
@@ -177,7 +178,7 @@ async function favChecks() {
   f = X.favoriteToAdd(day2, ints, [{ id: 9, day_id: 'day2', activity_id: 'd2_museum' }]);
   ck('…already on the plan → the next one (tie on stars and voters broken by name: Bell Tower before Old Walls)', !!f && f.a.id === 'd2_tower');
   f = X.favoriteToAdd(day2, ints, [{ id: 9, day_id: 'day3', activity_id: 'd2_museum' }]);
-  ck('…an entry on ANOTHER day does not count as planned', !!f && f.a.id === 'd2_museum');
+  ck('…a favorite a planner MOVED to another day counts as planned (not offered again; v0.25.1)', !!f && f.a.id === 'd2_tower');
   ck('…no stars on the day → nothing to add', X.favoriteToAdd(day2, {}, []) === null);
   const lunch = day2.activities.find(a => a.id === 'd2_lunch');
   const b = X.favoritePlanBody(day2, Object.assign({}, lunch, { start: '13:00' }));
@@ -235,6 +236,26 @@ async function favChecks() {
     const labels = all(card, n => n.type === 'button').map(n => n.props['aria-label']).filter(Boolean);
     const ct = text(card);
     ck('a saving row says "saving…" and has no edit / move / remove buttons yet; a saved row has them', ct.includes('saving') && labels.filter(l => l === 'Edit this plan item').length === 1 && labels.filter(l => l === 'Remove from the plan').length === 1);
+    // v0.25.1: the remove-confirm strip must fit a phone. DayPlanCard's
+    // useState(null) order is editId, confirmId, moveId, mDay — override the
+    // second so the confirm is open on the booking-linked row.
+    const res = { id: 3, day_id: 'day2', kind: 'hotel', name: 'Check in Harbor Inn Old Town Riverside Suites', confirmation: 'ABC123' };
+    const linked = { id: 8, day_id: 'day2', activity_id: 'res:3', res_id: 3, title: res.name, time_text: '12:45', who: '[]' };
+    React.__stateOverrides = [{ init: null, value: null }, { init: null, value: 8 }];
+    let open = null;
+    try { open = X.DayPlanCard({ day: X.DAYS.find(d => d.id === 'day2'), schedule: [linked], user: X.FAMILY[0], onAdd: noop, onDelete: noop, onJump: noop, onEdit: noop, onMove: noop, reservations: [res], prefill: null, interests: {} }); } catch (e) { open = null; }
+    React.__stateOverrides = [];
+    const strip = open ? all(open, n => n.props['aria-label'] === 'Confirm removal')[0] : null;
+    const row = strip ? all(open, n => (n.children || []).indexOf(strip) >= 0)[0] : null;
+    const st = strip ? strip.props.style || {} : {};
+    ck('the remove confirm ("… also deletes its booking") sits on a full-width line of its own, so the row wraps and Delete / Keep stay on a 360px phone',
+      !!strip && text(strip).includes('deletes its booking') && st.flex === '1 1 100%' && !('flexShrink' in st) && !!row && row.props.style.flexWrap === 'wrap');
+    const dk = strip ? all(strip, n => n.type === 'button').map(n => text(n).trim()) : [];
+    ck('…with Delete and Keep buttons big enough to tap (12px, 6px padding)', dk.join() === 'Delete,Keep' && all(strip, n => n.type === 'button').every(n => parseFloat(n.props.style.fontSize) >= 12));
+    const pk = strip ? all(strip, n => n.type === 'button' && text(n).trim() === 'Keep')[0] : null;
+    const closed = X.DayPlanCard({ day: X.DAYS.find(d => d.id === 'day2'), schedule: [linked], user: X.FAMILY[0], onAdd: noop, onDelete: noop, onJump: noop, onEdit: noop, onMove: noop, reservations: [res], prefill: null, interests: {} });
+    const rmBtn = all(closed, n => n.props['aria-label'] === 'Remove from the plan')[0];
+    ck('…keyboard: focus lands on Keep when the confirm opens, and Keep hands it back to that row\'s ×', !!pk && pk.props.autoFocus === true && !!rmBtn && rmBtn.props['data-rm'] === 'plan-8');
   } else ck('DayPlanCard exists', false);
 }
 
@@ -256,12 +277,135 @@ function packChecks() {
   cb(notYet).props.onKeyDown({ key: ' ', preventDefault() { prevented = true; } });
   cb(notYet).props.onKeyDown({ key: 'a', preventDefault() {} });
   ck('tap or Space/Enter toggles; other keys do not', tog.join() === '9,8' && prevented && cb(notYet).props.tabIndex === 0);
+  // v0.25.1: × asks first. The harness's useState setter is a no-op, so check
+  // what the tap asks for, then render the asking state (useState(false) → true).
+  let asked = null;
+  React.__setSpy = (init, v) => { if (init === false) asked = v; };
   const x = all(mine, n => n.type === 'button')[0];
-  if (x) x.props.onClick({ stopPropagation() {} });
-  ck('the remove button sits beside the checkbox (not inside it), says what it removes, and does not toggle', !!x && all(cb(mine), n => n.type === 'button').length === 0 && x.props['aria-label'] === 'Remove Passports' && del.join() === '7' && tog.length === 2);
+  try { if (x) x.props.onClick({ stopPropagation() {} }); } finally { React.__setSpy = null; }
+  ck('the remove button sits beside the checkbox (not inside it), says what it removes, and does not toggle', !!x && all(cb(mine), n => n.type === 'button').length === 0 && x.props['aria-label'] === 'Remove Passports' && tog.length === 2);
+  ck('…tapping × asks first ("Remove it?") and removes nothing yet', asked === true && del.length === 0);
+  React.__stateOverrides = [{ init: false, value: true }];
+  let ask = null;
+  try { ask = row({ id: 7, item: 'Passports', who: '', perPerson: true, done: 1, doneBy: ['Alex', 'Sam'] }); } finally { React.__stateOverrides = []; }
+  const grp = ask ? all(ask, n => n.props['aria-label'] === 'Confirm removal')[0] : null;
+  const gb = grp ? all(grp, n => n.type === 'button') : [];
+  const keep = gb.find(b => text(b).trim() === 'Keep'), delBtn = gb.find(b => text(b).trim() === 'Delete');
+  if (keep) keep.props.onClick();
+  const afterKeep = del.length;
+  if (delBtn) delBtn.props.onClick();
+  ck('…the confirm offers Delete and Keep: Keep removes nothing, Delete removes that item', !!grp && text(grp).includes('Remove it?') && afterKeep === 0 && del.join() === '7' && all(ask, n => n.props['aria-label'] === 'Remove Passports').length === 0);
+  const gs = grp ? grp.props.style || {} : {};
+  const rowBox = ask ? ask.props.style || {} : {};
+  ck('…the confirm takes a full-width line of its own under the item (the item name keeps its width on a phone)', gs.flex === '1 1 100%' && !('flexShrink' in gs) && rowBox.flexWrap === 'wrap');
+  ck('…keyboard: focus lands on Keep when it opens, and Keep hands focus back to this row\'s ×', !!keep && keep.props.autoFocus === true && x.props['data-rm'] === 'pack-7');
+  if (typeof X.focusAfterDelete === 'function') {
+    // a fake page: packing ×s #1 (before the Delete button) and #3 (after it);
+    // row #2's own × is hidden behind its confirm
+    const mk = v => ({ getAttribute: () => v });
+    const r1 = mk('pack-1'), r3 = mk('pack-3');
+    const btn = { compareDocumentPosition: el => (el === r1 ? 2 : 4) }; // 2 = el precedes, 4 = el follows
+    const realQ = sandbox.document.querySelectorAll;
+    const picks = [];
+    try {
+      sandbox.document.querySelectorAll = () => [r1, r3]; picks.push(X.focusAfterDelete(btn, 'pack-', '.pack-group-head'));
+      sandbox.document.querySelectorAll = () => [r1]; picks.push(X.focusAfterDelete(btn, 'pack-', '.pack-group-head'));
+      sandbox.document.querySelectorAll = () => []; picks.push(X.focusAfterDelete(btn, 'pack-', '.pack-group-head'));
+    } finally { sandbox.document.querySelectorAll = realQ; }
+    ck('…Delete sends keyboard focus to the next row\'s ×, else the previous one, else the group header (not to the top of the page)',
+      picks.join(' | ') === '[data-rm="pack-3"] | [data-rm="pack-1"] | .pack-group-head');
+  } else ck('focusAfterDelete exists', false);
   const box = all(cb(mine), n => n.props['aria-hidden'] === 'true')[0];
   ck('the check box is at least 26px (was 21px)', !!box && parseFloat(box.props.style.width) >= 26);
   ck("packing groups follow the trip's own travelers, then Everyone and Day Bag", Array.isArray(X.PACK_PERSON_ORDER) && X.PACK_PERSON_ORDER.join() === X.FAMILY.concat(['Everyone', 'Day Bag']).join());
+  // v0.25.1: each group header is a real button that says Hide / Show and
+  // which list it opens (the app's Packing tab, with two groups of items)
+  const items = [{ id: 1, item: 'Hat', who: X.FAMILY[0], done: 0 }, { id: 2, item: 'Snacks', who: 'Day Bag', done: 0, perPerson: true, doneBy: [] }];
+  sandbox.localStorage.setItem('tg_tab', 'packing');
+  const renderPack = collapsedMap => {
+    // packing is the app's 4th useState([]) (notes, suggestions, bookings, packing)
+    React.__stateOverrides = [{ init: null, value: X.FAMILY[0] }, { init: [], value: [] }, { init: [], value: [] }, { init: [], value: [] }, { init: [], value: items }].concat(collapsedMap ? [{ init: {}, value: collapsedMap }] : []);
+    React.__forceOpen = true;
+    let app = null;
+    try { app = X.App(); } catch (e) { app = null; }
+    React.__forceOpen = false; React.__stateOverrides = [];
+    return app;
+  };
+  const shown = app => all(app, n => n.type === X.PackRow).map(n => n.props.p.item); // rows are components: read their props
+  const openApp = renderPack(null);
+  const heads = openApp ? all(openApp, n => n.props.className === 'pack-group-head') : [];
+  ck('packing group headers are buttons that say "Hide" and point at their list (aria-expanded, aria-controls)',
+    heads.length === 2 && heads.every(h => h.type === 'button' && h.props['aria-expanded'] === 'true' && /Hide/.test(text(h)) && all(openApp, n => n.props.id === h.props['aria-controls']).length === 1));
+  // the App has several useState({}) — find the one that is packCollapsed by
+  // trying each position until a header reports collapsed
+  let folded = null;
+  for (let k = 0; k < 12 && !folded; k++) {
+    const pre = Array.from({ length: k }, () => ({ init: {}, value: {} }));
+    React.__stateOverrides = [{ init: null, value: X.FAMILY[0] }, { init: [], value: [] }, { init: [], value: [] }, { init: [], value: [] }, { init: [], value: items }].concat(pre, [{ init: {}, value: { 'Day Bag': true } }]);
+    React.__forceOpen = true;
+    let app = null;
+    try { app = X.App(); } catch (e) { app = null; }
+    React.__forceOpen = false; React.__stateOverrides = [];
+    const h = app ? all(app, n => n.props.className === 'pack-group-head' && n.props['aria-expanded'] === 'false')[0] : null;
+    if (h) folded = { app, h };
+  }
+  ck('…a folded group says "Show", its items are hidden, and the other group stays open',
+    !!folded && /Show/.test(text(folded.h)) && shown(folded.app).join() === 'Hat' && shown(openApp).join() === 'Hat,Snacks');
+  ck('…a folded header points at no list (its list is not on the page); open lists have distinct ids',
+    !!folded && folded.h.props['aria-controls'] === undefined && new Set(heads.map(h => h.props['aria-controls'])).size === heads.length);
+  ck('…its focus ring is drawn inside the header (the card would clip one outside it)', /\.pack-group-head:focus-visible\{outline-offset:-3px/.test(HTML));
+  sandbox.localStorage.removeItem('tg_tab');
+}
+
+function chipChecks() {
+  console.log('==> day chips');
+  if (typeof X.DayStrip !== 'function') { ck('DayStrip exists', false); return; }
+  const L = (l, w) => typeof X.dayChipLines === 'function' ? X.dayChipLines(l, w).join(' / ') : '(no dayChipLines)';
+  ck('a label like "Sat Sep 5" keeps its day number (was "Sat / Sep"); the weekday printed above is not repeated', L('Sat Sep 5', 'Sat') === 'Sep / 5' && L('Sat. Sep 5', 'Sat') === 'Sep / 5');
+  ck('…"Saturday Sep 5" drops the weekday too, but "Sunset cruise" on a Sunday keeps its first word; the result says whether it dropped one',
+    L('Saturday Sep 5', 'Sat') === 'Sep / 5' && L('Sunset cruise', 'Sun') === 'Sunset / cruise' && X.dayChipLines('Sat Sep 5', 'Sat').stripped === true && X.dayChipLines('Day  1', 'Sat').stripped === false);
+  ck('…"Day 1" stays "Day / 1"; a long label keeps every word on the second line; one word stays one line', L('Day 1', 'Sat') === 'Day / 1' && L('Arrival day in Rome', '') === 'Arrival / day in Rome' && L('Arrival', 'Sat') === 'Arrival / ' && L('', '') === ' / ');
+  const days = [{ id: 'day1', label: 'Sat Sep 5', emoji: 'x', location: 'Harbor Town' }, { id: 'day2', label: 'Day 2', emoji: 'y' }];
+  const strip = X.DayStrip({ days, day: 'day1', onPick() {} });
+  const chips = all(strip, n => n.type === 'button' && 'data-active' in n.props);
+  ck('each day chip shows the whole label and has a spoken name (weekday once, label, place) and marks the current day',
+    chips.length === 2 && text(chips[0]).includes('5') && chips[0].props['aria-label'] === 'Sat Sep 5, Harbor Town' && /^Sun — Day 2$/.test(chips[1].props['aria-label']) && chips[0].props['aria-current'] === 'true' && chips[1].props['aria-current'] === undefined);
+}
+
+function moreKeyChecks() {
+  console.log('==> More list keyboard (offline)');
+  // The list's keyboard handling lives in a mount effect + onBlur. Run the
+  // effect with fake DOM nodes: useRef is called moreRef, then listRef.
+  const focused = [];
+  const firstBtn = { focus() { focused.push('first'); } };
+  const inside = { id: 'inside' }, outside = { id: 'outside' };
+  const moreEl = { focus() { focused.push('more'); } };
+  const listEl = { querySelector: s => (s === 'button' ? firstBtn : null), contains: n => n === inside || n === firstBtn };
+  const refs = [{ current: moreEl }, { current: listEl }];
+  const realRef = React.useRef, realAdd = sandbox.document.addEventListener, realRm = sandbox.document.removeEventListener;
+  const listeners = [], removed = [];
+  let k = 0, sets = [];
+  React.useRef = () => refs[k++ % 2];
+  sandbox.document.addEventListener = (type, fn) => listeners.push({ type, fn });
+  sandbox.document.removeEventListener = (type, fn) => removed.push({ type, fn });
+  React.__runEffects = true;
+  let bar = null;
+  try { bar = X.TabBar({ tabs: X.TAB_LIST, tab: 'itinerary', onPick() {}, wide: false, moreOpen: true, setMoreOpen: v => sets.push(v) }); } finally {
+    React.__runEffects = false; React.useRef = realRef;
+    sandbox.document.addEventListener = realAdd; sandbox.document.removeEventListener = realRm;
+  }
+  ck('opening More moves focus to the first entry in the list', focused[0] === 'first');
+  const key = listeners.find(l => l.type === 'keydown');
+  if (key) key.fn({ key: 'a' });
+  ck('…a key other than Escape does nothing', !!key && sets.length === 0);
+  if (key) key.fn({ key: 'Escape' });
+  ck('…Escape closes the list and puts focus back on More', sets.join() === 'false' && focused[focused.length - 1] === 'more');
+  const menu = bar ? all(bar, n => n.props.id === 'more-tabs')[0] : null;
+  sets = [];
+  if (menu) { menu.props.onBlur({ relatedTarget: inside }); menu.props.onBlur({ relatedTarget: moreEl }); menu.props.onBlur({ relatedTarget: null }); }
+  const kept = sets.length;
+  if (menu) menu.props.onBlur({ relatedTarget: outside });
+  ck('…moving focus inside the list, back to More, or nowhere keeps it open; tabbing out of it closes it', !!menu && kept === 0 && sets.join() === 'false');
 }
 
 function portalChecks() {
@@ -379,6 +523,8 @@ if (process.env.UI_CHILD === 'today') {
   try { tabChecks(); } catch (e) { ck('tab checks ran without an exception (' + e.message + ')', false); }
   try { nowChecks(); } catch (e) { ck('now checks ran without an exception (' + e.message + ')', false); }
   try { todayChecks(); } catch (e) { ck('today checks ran without an exception (' + e.message + ')', false); }
+  try { moreKeyChecks(); } catch (e) { ck('More keyboard checks ran without an exception (' + e.message + ')', false); }
+  try { chipChecks(); } catch (e) { ck('day chip checks ran without an exception (' + e.message + ')', false); }
   try { portalChecks(); } catch (e) { ck('portal checks ran without an exception (' + e.message + ')', false); }
   try { a11yChecks(); } catch (e) { ck('accessibility checks ran without an exception (' + e.message + ')', false); }
   try { packChecks(); } catch (e) { ck('packing checks ran without an exception (' + e.message + ')', false); }

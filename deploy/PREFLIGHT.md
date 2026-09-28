@@ -1,39 +1,34 @@
-# PREFLIGHT — supervised HTTPS deploy checklist
+# PREFLIGHT — supervised deploy checklist
 
 Companion to `DEPLOY.md`. Work top to bottom; every ☐ is either a command to run or a
-decision to make. Nothing here runs automatically.
-
-**Verified locally before this deploy** (see the overnight report): the app serves,
-logs in, writes (with idempotent replay), and boots the full PWA behind a local
-TLS-terminating proxy identical in shape to the nginx config in this kit. The server
-code has no protocol/origin assumptions (no cookies, no absolute URLs, token-header
-auth), and the map's tile source is `https://` (no mixed content).
+decision to make. Nothing here runs automatically. Updated v0.25.1 for `deploy.sh v2`
+(one named trip, code only) and `new-trip.sh` (creating a trip).
 
 ---
 
 ## 0. Decisions to make first
 
-- ☐ **DECISION [domain vs ip]:** domain mode (90-day auto-renewing cert, recommended)
-  or bare-IP mode (~6-day cert, thin renewal margin, browser warnings if the box is
-  ever down for days). Private/LAN IPs are not eligible.
-- ☐ **DECISION [final URL]:** the origin you turn on tomorrow is the origin everyone
-  keeps. **Moving from `http://IP` to `https://domain` later is a NEW origin: every
-  installed PWA and login is lost and must be re-done** (`DEPLOY.md` §"What changes
-  for the origin"). Pick the final URL *before* sharing anything.
-- ☐ **DECISION [rehearsal]:** for a first run, rehearse certbot with `--staging`
-  (see step 4) — especially in IP mode, which is rate-limited to 5 certs per IP per
-  168 h. A failed real attempt burns quota.
+- ☐ **DECISION [final URL]:** each trip's origin is `https://<name>.<your domain>`.
+  **Changing it later is a NEW origin: every installed app and sign-in is lost and must
+  be re-done** (`DEPLOY.md` §"What changes for the origin"). Pick the name *before*
+  sharing anything.
+- ☐ **DECISION [canary]:** with several trips on one server, pick one to deploy first
+  and check in a browser before the others.
+- ☐ **DECISION [data changes]:** read the release notes for a one-time data change on
+  first start (v0.25.0's packing move is one). A release like that can't be undone by
+  deploying the older code alone — see §5.
 
 ## 1. Before touching the server
 
-- ☐ Merge the reviewed branches; deploy from `main` (or the agreed branch).
-- ☐ `git status` clean in the project folder; `npm start` + `curl -s localhost:3000/api/health` → `{"status":"ok"}`.
-- ☐ Confirm the deploy scripts' EDIT-ME headers are filled in:
-  - `deploy/deploy.sh` → `SERVER`, `SSH_KEY`, `APP_DIR`
-  - `deploy/setup-https.sh` → `SERVER_NAME`, `CERT_MODE`, `EMAIL`
-- ☐ Ports 80 + 443 open at the provider firewall too, not just ufw.
-- ☐ Domain mode only: `A` record (and `AAAA` if IPv6) points at the server IP and
-  has propagated (`nslookup YOUR_DOMAIN`).
+- ☐ The release is merged, tagged, and pushed; you are **on `main` at the tag**:
+  `git describe --tags --exact-match` prints the tag, `git status --porcelain` prints
+  nothing. `deploy.sh` ships your working tree, so what's in the folder is what goes.
+- ☐ `deploy/deploy.local.env` exists with `SERVER`, `SSH_KEY` (and, for a new trip,
+  `PUBLIC_SUFFIX`, `CERT_EMAIL`).
+- ☐ `deploy/instances.local.conf` has a row for the trip: `<name>  <app-dir>  <port>`.
+  (`new-trip.sh` adds it; `deploy.sh <name>` lists the known names if you get one wrong.)
+- ☐ New trip only: its `A` record resolves to the server (`nslookup <name>.<domain>
+  1.1.1.1`), and ports 80 + 443 are open at the provider firewall too.
 
 ## 2. Provision (once per server)
 
@@ -41,56 +36,55 @@ auth), and the map's tile source is `https://` (no mixed content).
 scp -i ~/.ssh/YOUR_KEY deploy/provision.sh root@YOUR_SERVER_IP:/root/
 ssh  -i ~/.ssh/YOUR_KEY root@YOUR_SERVER_IP "bash /root/provision.sh"
 ```
-- ☐ Ends with node v24.x, nginx, PM2, certbot ≥ 5.4 versions printed.
+- ☐ Ends with node v24.x, nginx, PM2, certbot versions printed.
 
-## 3. Back up the live DB, then deploy the app
+## 3. Back up, then deploy
 
-- ☐ **If this server already ran the app, back up `data.db` FIRST:**
+- ☐ **Back up the trip's database first** (nightly copies under
+  `/root/db-backups/<name>/` exist once `backup-all.sh` runs from cron, but take one
+  now). `sqlite3 .backup` makes a consistent copy while the app is running;
+  `provision.sh` installs the `sqlite3` tool. The `test -s` stops a mistyped name
+  from "backing up" a new empty file:
 ```bash
 ssh -i ~/.ssh/YOUR_KEY root@YOUR_SERVER_IP \
-  "cp /var/www/trip-dashboard/data.db /root/data.db.backup-$(date +%F) 2>/dev/null || echo 'no data.db yet'"
+  "test -s /var/www/trips/<name>/data.db && sqlite3 /var/www/trips/<name>/data.db \".backup /root/data.db.<name>.pre-deploy-$(date +%F)\" && echo backed up"
 ```
-- ☐ From the project folder on the laptop:
+- ☐ New trip: `deploy/new-trip.sh <name> --dry-run`, read the plan, then type
+  `deploy/new-trip.sh <name> --yes`.
+- ☐ Existing trip, from the repo root:
 ```bash
-bash deploy/deploy.sh
+deploy/deploy.sh <name>
 ```
-  (Copies `server.js`, `package.json`, `package-lock.json`, `ecosystem.config.js`,
-  and all of `public/` — which now includes `manifest.json`, `sw.js`, and the icons.
-  Never copies `node_modules` or `data.db`.)
-- ☐ Note: `scp -r` adds/overwrites but never deletes — if a file was *removed* from
-  `public/` locally, delete it on the server by hand.
-- ☐ Verify over plain HTTP before TLS:
+  Ships `server.js`, `package.json`, `package-lock.json`, `tools/`, `public/`. Never
+  ships `ecosystem*`, `.env`, `data.db`, `*.backup-*` or `node_modules`. Ends with
+  `deployed: '<name>' is healthy on port … at v<release>.` — anything else stops the
+  rollout.
+- ☐ Verify from the laptop:
 ```bash
-ssh -i ~/.ssh/YOUR_KEY root@YOUR_SERVER_IP "curl -s localhost:3000/api/health"
+curl -s https://<name>.<domain>/api/health
 ```
 
-## 4. HTTPS
+## 4. Post-deploy check (in a real browser, over https://)
 
-- ☐ (Rehearsal, recommended) add `--staging` to the certbot command in
-  `setup-https.sh`, run it once, confirm the flow completes with a test cert,
-  then remove `--staging` and run again for the real cert.
-- ☐ Real run, on the server:
+- ☐ Fully close the app on the phone first — a page left open keeps running the old
+  code.
+- ☐ Signed out (a private tab): only the sign-in screen, no trip content.
+- ☐ Sign in: the trip loads; add a note, reload, still signed in, note kept.
+- ☐ Map tab shows tiles and pins (the *phone* needs internet for tiles, not the server).
+- ☐ Airplane mode, reopen from the home screen: the trip still opens.
+- ☐ The checks the release notes list for this version.
+- ☐ Then the next trip, same steps.
+
+## 5. Rollback
+
+- **Code:** check out the previous tag (`git checkout v<previous>`) and run
+  `deploy/deploy.sh <name>`. The health gate checks that version. `data.db` is never
+  touched by a deploy.
+- **Data changes:** a release that migrated data on first start is not undone by
+  deploying older code — read its notes (v0.25.0: per-person packing ticks are invisible
+  to v0.24, so those items show unticked).
+- **Database:** stop the trip, restore a backup, start it:
 ```bash
-ssh -i ~/.ssh/YOUR_KEY root@YOUR_SERVER_IP "bash /var/www/trip-dashboard/deploy/setup-https.sh"
+ssh -i ~/.ssh/YOUR_KEY root@YOUR_SERVER_IP \
+  "pm2 stop trip-<name> && cp /root/data.db.<name>.pre-deploy-<date> /var/www/trips/<name>/data.db && pm2 start trip-<name>"
 ```
-- ☐ `curl -I https://YOUR_DOMAIN_OR_IP/` → `HTTP/2 200`.
-- ☐ Domain mode only, once stable: consider enabling the commented HSTS line in
-  `deploy/nginx/trip-dashboard.conf.template` site config. **Never with an IP cert.**
-
-## 5. Post-deploy smoke test (in a real browser, over https://)
-
-- ☐ Load the site, log in, land on the itinerary.
-- ☐ Map tab shows tiles and pins (tiles come from openstreetmap.org — the *client*
-  needs internet, not the server).
-- ☐ Add a note; hard-refresh: still signed in, same tab, note persisted.
-- ☐ Install the PWA (phone or desktop) and reopen it once.
-- ☐ `systemctl list-timers | grep certbot` shows the renewal timer.
-- ☐ IP mode only: diarize that the cert self-renews every ~6 days *only while the
-  box and timer stay up*.
-
-## 6. Rollback
-
-- App code: re-run `bash deploy/deploy.sh` from any earlier checkout — `data.db` is
-  never touched by deploys.
-- DB: restore the step-3 backup (`cp /root/data.db.backup-… /var/www/trip-dashboard/data.db`
-  with the app stopped: `pm2 stop trip-dashboard`, copy, `pm2 start trip-dashboard`).

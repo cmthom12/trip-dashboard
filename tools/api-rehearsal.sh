@@ -536,6 +536,8 @@ pk_tog "$TOK_SAM" "$PP" '{"done":0}'
 [ "$(pk_row "$TOK_CASEY" "$PP")" = "1|Casey|true" ] && [ "$(pk_row "$TOK_SAM" "$PP")" = "0|Casey|true" ]; ck $? "…Sam unticking takes away only his own check"
 pk_tog "$TOK_MORGAN" "$PP"
 [ "$(pk_row "$TOK_MORGAN" "$PP")" = "1|Casey+Morgan|true" ]; ck $? "…an older client's no-body toggle flips only the caller's own check"
+node -e 'const D=require(process.argv[1]);const db=new D(process.argv[2]);db.prepare("INSERT OR IGNORE INTO packing_checks (item_id, name) VALUES (?, ?)").run(+process.argv[3],"Kasey");db.close()' "$BSQ" "$A/data.db" "$PP"
+[ "$(pk_row "$TOK_CASEY" "$PP")" = "1|Casey+Morgan|true" ]; ck $? "…a check left by a name no longer on the roster (renamed / removed) is not listed in Packed: (v0.25.1)"
 SH="$(pk_new '{"item":"Sunscreen","who":"Everyone"}')"
 pk_tog "$TOK_SAM" "$SH" '{"done":1}'
 [ "$(pk_row "$TOK_CASEY" "$SH")" = "1||false" ]; ck $? "a shared item (Everyone) keeps ONE check: Sam ticks it, Casey sees it packed"

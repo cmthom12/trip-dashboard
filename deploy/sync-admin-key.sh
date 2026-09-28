@@ -7,8 +7,19 @@
 #
 # Usage:  sync-admin-key.sh [source-instance]
 #   source-instance defaults to the first directory (sorted) under TRIPS_ROOT
-#   that contains a .env. TRIPS_ROOT env override exists for local testing
-#   (no pm2 locally: reload prints "skipped", probes print "unreachable").
+#   whose .env carries a NON-EMPTY ADMIN_KEY (v0.25.1 — it used to be the first
+#   directory with any .env, which after a stand-up is often the brand-new,
+#   still-empty one: "nothing to sync", exit 2). Name a source to pin it.
+#   TRIPS_ROOT env override exists for local testing (no pm2 locally: reload
+#   prints "skipped", probes print "unreachable").
+#
+# Each instance is reloaded BY FILE (cd <dir> && pm2 reload ecosystem.config.js):
+# the app never reads .env itself — its ecosystem.config.js reads .env and
+# hands the allowlisted keys to the process — so only a by-file reload delivers
+# the new key. (v0.25.1 — the old by-name reload left a freshly stood-up
+# process on its old, empty env.) A directory WITHOUT an ecosystem.config.js
+# can't be given the key by a reload at all: it is reported as a problem
+# (exit 1) and not reloaded.
 #
 # The key itself is NEVER echoed — the table shows a 12-hex sha256 fingerprint;
 # the key is passed to awk via the environment, not argv.
@@ -22,11 +33,17 @@ INSTANCES=()
 for d in */; do [ -f "${d}.env" ] && INSTANCES+=("${d%/}"); done
 [ "${#INSTANCES[@]}" -gt 0 ] || { echo "sync-admin-key: no instance dirs with a .env under $TRIPS_ROOT" >&2; exit 2; }
 
-SRC="${1:-${INSTANCES[0]}}"
-[ -f "$SRC/.env" ] || { echo "sync-admin-key: source instance '$SRC' has no .env here" >&2; exit 2; }
-
 get_key() { tr -d '\r' < "$1" | sed -n 's/^ADMIN_KEY=//p' | head -1; }
 fp_of()   { printf '%s' "$1" | sha256sum | cut -c1-12; }
+
+SRC="${1:-}"
+if [ -z "$SRC" ]; then
+  for n in "${INSTANCES[@]}"; do
+    if [ -n "$(get_key "$n/.env")" ]; then SRC="$n"; break; fi
+  done
+  [ -n "$SRC" ] || { echo "sync-admin-key: no instance under $TRIPS_ROOT has a non-empty ADMIN_KEY — nothing to sync" >&2; exit 2; }
+fi
+[ -f "$SRC/.env" ] || { echo "sync-admin-key: source instance '$SRC' has no .env here" >&2; exit 2; }
 
 KEY="$(get_key "$SRC/.env")"
 [ -n "$KEY" ] || { echo "sync-admin-key: source '$SRC' has an empty ADMIN_KEY — nothing to sync" >&2; exit 2; }
@@ -51,8 +68,11 @@ for name in "${INSTANCES[@]}"; do
   [ "$FP" = "$SRC_FP" ] || BAD=$((BAD+1))
 
   RELOAD="skipped (no pm2)"
-  if [ "$HAVE_PM2" = 1 ]; then
-    if pm2 reload "trip-${name#trip-}" >/dev/null 2>&1; then RELOAD="ok"; else RELOAD="FAILED"; BAD=$((BAD+1)); fi
+  if [ ! -f "$name/ecosystem.config.js" ]; then
+    # (we are cd'ed into TRIPS_ROOT, so "$name/..." works for a relative root too)
+    RELOAD="NO ecosystem.config.js"; BAD=$((BAD+1))
+  elif [ "$HAVE_PM2" = 1 ]; then
+    if (cd "$name" && pm2 reload ecosystem.config.js) >/dev/null 2>&1; then RELOAD="ok (file)"; else RELOAD="FAILED"; BAD=$((BAD+1)); fi
   fi
 
   PORT="$(tr -d '\r' < "$env" | sed -n 's/^PORT=//p' | head -1)"
@@ -62,8 +82,14 @@ for name in "${INSTANCES[@]}"; do
     # The key goes in on stdin (-H @- reads headers from there), never on the
     # command line: argv is world-readable in /proc and shows up in ps output.
     # Same reason the awk rewrite above passes it through ENVIRON.
-    CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H @- \
-      "http://localhost:${PORT}/api/admin/overview" <<< "X-Admin-Key: $KEY" 2>/dev/null || true)"
+    # A process that was just reloaded may not listen yet: retry "unreachable"
+    # for up to ~5 s before reporting it (it used to show on every row).
+    for _try in 1 2 3 4 5 6; do
+      CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H @- \
+        "http://localhost:${PORT}/api/admin/overview" <<< "X-Admin-Key: $KEY" 2>/dev/null || true)"
+      [ "$CODE" = 000 ] && [ "$HAVE_PM2" = 1 ] && [ "$_try" -lt 6 ] && { sleep 1; continue; }
+      break
+    done
     case "$CODE" in
       200) PROBE="200 ok" ;;
       000) PROBE="unreachable" ;;
@@ -75,6 +101,9 @@ done
 
 if [ "$BAD" -gt 0 ]; then
   echo "sync-admin-key: $BAD problem(s) — see the table above" >&2
+  echo "  (NO ecosystem.config.js: that instance's .env has the key, but its process" >&2
+  echo "   can only get it through an ecosystem file — copy deploy/ecosystem.template.config.js" >&2
+  echo "   there with NAME set, then: cd <dir> && pm2 reload ecosystem.config.js)" >&2
   exit 1
 fi
 echo "sync-admin-key: all instances carry fingerprint $SRC_FP"

@@ -301,7 +301,7 @@ next_steps() {
 DONE: '$NAME' is live at https://$HOST (port $PORT, pm2 $PM2_NAME, v$LOCAL_VER).
 Next, on the droplet:
   1. bash deploy/sync-admin-key.sh                # shared ADMIN_KEY into $APP_DIR/.env
-     cd $APP_DIR && pm2 reload ecosystem.config.js   # by FILE: the sync's by-name reload won't refresh a new process's env
+     cd $APP_DIR && pm2 reload ecosystem.config.js   # by FILE — harmless repeat with the v0.25.1 sync (it reloads by file itself); REQUIRED with an older /root copy
   2. bash deploy/sync-sso-secret.sh --only $NAME  # only if this trip joins family SSO (then /api/sso answers 401, not 404)
   3. deploy/instances.local.conf already has the row '$NAME  $APP_DIR  $PORT' — future code updates: deploy/deploy.sh $NAME
   4. Backups: nothing to do — backup-all.sh picks up $APP_DIR/data.db on its next nightly sweep.

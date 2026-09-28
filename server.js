@@ -754,11 +754,15 @@ app.get('/api/packing', requireReader, (req, res) => {
   db.prepare('SELECT item_id, name FROM packing_checks ORDER BY name').all()
     .forEach(c => { (checks[c.item_id] = checks[c.item_id] || []).push(c.name); });
   const me = req.readerName;
+  // v0.25.1: only names on the trip's current roster are listed — a check
+  // left by a traveler who was renamed or removed stays in the table (and
+  // shows again if the name comes back) but no longer appears in "Packed:".
+  const roster = new Set(allowedNames());
   // `done` stays the reader's own state, so a v0.24 client still shows the
   // right box; `doneBy` lists who has packed a per-person item.
   res.json(db.prepare('SELECT * FROM packing ORDER BY created_at ASC').all().map(r => {
     if (!packPerPerson(r.who)) return Object.assign(r, { perPerson: false });
-    const by = checks[r.id] || [];
+    const by = (checks[r.id] || []).filter(n => roster.has(n));
     return Object.assign(r, { perPerson: true, doneBy: by, done: by.includes(me) ? 1 : 0 });
   }));
 });
