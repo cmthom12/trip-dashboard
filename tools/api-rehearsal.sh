@@ -520,6 +520,71 @@ ck $? "the migrated user logs in again against the peppered hash"
 J -X POST "$API/api/login" -d '{"name":"Jordan","pin":"0000"}' | grep -q '"error":"Incorrect PIN"'
 ck $? "a wrong PIN is still refused after migration"
 
+echo "==> R9: packing — each person checks their own; shared items keep one check (v0.25.0)"
+pk_new() { auth "$TOK_CASEY" -X POST "$API/api/packing" -d "$1" | sed -n 's/.*"id":\([0-9]*\).*/\1/p'; }
+pk_row() { # pk_row <token> <id> → "done|doneBy joined with +|perPerson" as that reader sees it
+  curl -s -H "X-Auth-Token: $1" "$API/api/packing" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const r=JSON.parse(s).find(p=>String(p.id)===process.argv[1]);console.log(r?[r.done,(r.doneBy||[]).join("+"),r.perPerson].join("|"):"missing")})' "$2"
+}
+pk_tog() { auth "$1" -X POST "$API/api/packing/$2/toggle" ${3:+-d "$3"} >/dev/null; }
+PP="$(pk_new '{"item":"Passports","who":""}')"
+pk_tog "$TOK_SAM" "$PP" '{"done":1}'
+[ -n "$PP" ] && [ "$(pk_row "$TOK_SAM" "$PP")" = "1|Sam|true" ]; ck $? "Sam ticks Passports (a per-person item): his box is checked, packed by Sam"
+[ "$(pk_row "$TOK_CASEY" "$PP")" = "0|Sam|true" ]; ck $? "…Casey's own box stays unchecked, and she can see Sam packed it"
+pk_tog "$TOK_CASEY" "$PP" '{"done":1}'; pk_tog "$TOK_SAM" "$PP" '{"done":1}'
+[ "$(pk_row "$TOK_CASEY" "$PP")" = "1|Casey+Sam|true" ]; ck $? "…two people ticking the same item no longer undo each other"
+pk_tog "$TOK_SAM" "$PP" '{"done":0}'
+[ "$(pk_row "$TOK_CASEY" "$PP")" = "1|Casey|true" ] && [ "$(pk_row "$TOK_SAM" "$PP")" = "0|Casey|true" ]; ck $? "…Sam unticking takes away only his own check"
+pk_tog "$TOK_MORGAN" "$PP"
+[ "$(pk_row "$TOK_MORGAN" "$PP")" = "1|Casey+Morgan|true" ]; ck $? "…an older client's no-body toggle flips only the caller's own check"
+SH="$(pk_new '{"item":"Sunscreen","who":"Everyone"}')"
+pk_tog "$TOK_SAM" "$SH" '{"done":1}'
+[ "$(pk_row "$TOK_CASEY" "$SH")" = "1||false" ]; ck $? "a shared item (Everyone) keeps ONE check: Sam ticks it, Casey sees it packed"
+ME="$(pk_new '{"item":"Sam hat","who":"Sam"}')"
+pk_tog "$TOK_CASEY" "$ME" '{"done":1}'
+[ "$(pk_row "$TOK_SAM" "$ME")" = "1||false" ]; ck $? "an item for one traveler keeps one check too (Casey packs Sam's hat, Sam sees it)"
+DB="$(pk_new '{"item":"Day snacks","who":"Day Bag"}')"
+pk_tog "$TOK_SAM" "$DB" '{"done":1}'
+[ "$(pk_row "$TOK_CASEY" "$DB")" = "0|Sam|true" ]; ck $? "a Day Bag item is per person too (each carries one)"
+OW="$(pk_new '{"item":"Old roster item","who":"Kasey"}')"
+pk_tog "$TOK_SAM" "$OW" '{"done":1}'
+[ "$(pk_row "$TOK_CASEY" "$OW")" = "1||false" ]; ck $? "an item owned by a name not (or no longer) on the roster stays ONE shared check — the rule reads the owner, not the roster"
+curl -s -H "X-Admin-Key: $ADMIN_KEY" "$API/api/admin/overview" | grep -q '"packing_checks":[0-9]'
+ck $? "the admin overview counts packing_checks rows"
+auth "$TOK_CASEY" -X DELETE "$API/api/packing/$PP" >/dev/null
+LEFT="$(node -e 'const D=require(process.argv[1]);const db=new D(process.argv[2],{readonly:true});console.log(db.prepare("SELECT COUNT(*) c FROM packing_checks WHERE item_id=?").get(+process.argv[3]).c)' "$BSQ" "$A/data.db" "$PP")"
+[ "$(pk_row "$TOK_CASEY" "$PP")" = missing ] && [ "$LEFT" = 0 ]; ck $? "deleting an item removes it and everyone's checks ($LEFT left)"
+
+echo "==> R10: old shared checks carry over once, as packed for everyone (v0.25.0)"
+kill "$PID_A" 2>/dev/null; sleep 1; PID_A=""
+node -e '
+  const D = require(process.argv[1]); const db = new D(process.argv[2]);
+  const ins = db.prepare("INSERT INTO packing (item, category, who, done) VALUES (?, ?, ?, 1)");
+  console.log([ins.run("Legacy socks", "", "").lastInsertRowid, ins.run("Legacy tent", "", "Everyone").lastInsertRowid].join(" "));
+  db.prepare("DELETE FROM app_settings WHERE key = ?").run("packing_checks_v1");
+  db.close();' "$BSQ" "$A/data.db" > "$TMP/legacy-ids"
+read -r LS LT < "$TMP/legacy-ids"
+cd "$A"; PORT=$PORT_A ADMIN_KEY="$ADMIN_KEY" PIN_PEPPER="$PEPPER" node server.js > server3.log 2>&1 &
+PID_A=$!
+cd "$TMP"
+up $PORT_A; ck $? "instance restarted with two old-style checked items"
+FAMN="$(curl -s -H "X-Auth-Token: $TOK_CASEY" "$API/api/trip" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{console.log((JSON.parse(s).family||[]).length)})')"
+R="$(pk_row "$TOK_CASEY" "$LS")"
+[ "${R%%|*}" = 1 ] && [ "$(printf '%s' "$R" | cut -d'|' -f2 | tr '+' '\n' | grep -c .)" = "$FAMN" ]
+ck $? "an old checked per-person item is packed for every traveler ($R; $FAMN travelers)"
+[ "$(pk_row "$TOK_CASEY" "$LT")" = "1||false" ]; ck $? "…an old checked shared item simply stays checked"
+kill "$PID_A" 2>/dev/null; sleep 1; PID_A=""
+cd "$A"; PORT=$PORT_A ADMIN_KEY="$ADMIN_KEY" PIN_PEPPER="$PEPPER" node server.js > server4.log 2>&1 &
+PID_A=$!
+cd "$TMP"
+up $PORT_A
+pk_tog "$TOK_CASEY" "$LS" '{"done":0}'
+kill "$PID_A" 2>/dev/null; sleep 1; PID_A=""
+cd "$A"; PORT=$PORT_A ADMIN_KEY="$ADMIN_KEY" PIN_PEPPER="$PEPPER" node server.js > server5.log 2>&1 &
+PID_A=$!
+cd "$TMP"
+up $PORT_A
+[ "$(pk_row "$TOK_CASEY" "$LS" | cut -d'|' -f1)" = 0 ]; ck $? "…the carry-over runs once: Casey's untick survives later restarts"
+
 echo "==> R7: an admin PIN reset also lifts a sign-in lockout (v0.24.0)"
 for _ in 1 2 3 4 5; do J -X POST "$API/api/login" -d '{"name":"Riley","pin":"0001"}' >/dev/null; done
 [ "$(code -X POST -H 'Content-Type: application/json' -d '{"name":"Riley","pin":"4444"}' "$API/api/login")" = 429 ]

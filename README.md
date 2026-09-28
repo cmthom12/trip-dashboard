@@ -84,12 +84,20 @@ tinkerers — you don't need it to use the dashboard.*
 ---
 
 ## What it does
-- Per-person interest voting on activities, with "consensus" highlights
+- A **Now** screen that opens during the trip: today's plan, what's next, and one
+  directions link (before the trip: a countdown; after: a link to the review)
+- Per-person interest voting on activities, with "consensus" highlights; planners can
+  put a day's favorite on its Day Plan in one step from **Decide**
 - Shared **Bookings** list and a **Day Plan**, kept in a two-way mirror (add a booking
   to the plan and the pair stays linked; deletes cascade)
-- Packing list, notes, suggestions, flight cards
+- Packing list (each traveler checks off their own copy of shared items like
+  passports; items for one person or for the whole group have one check),
+  notes, suggestions, flight cards
 - Calendar (.ics) export of the timed day plan, timezone-aware
-- PIN login per traveler; trip planners can edit the day plan
+- PIN login per traveler (or one sign-in through the family portal — if that hand-off
+  fails, the sign-in screen says why); trip planners can edit the day plan
+- On a phone: Now, Itinerary, Map and Decide in the tab bar, everything else under
+  **More**; readable contrast, labelled buttons and a keyboard focus ring
 - All data lives in a single `data.db` file on the server
 
 ## Requirements

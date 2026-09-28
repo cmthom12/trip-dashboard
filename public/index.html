@@ -23,6 +23,11 @@
 ::-webkit-scrollbar{display:none}
 *{-ms-overflow-style:none;scrollbar-width:none}
 input,select,textarea{font-size:16px}
+/* v0.25.0: a visible keyboard focus ring everywhere (many controls set
+   outline:none inline), and a skip link for screen-reader/keyboard users. */
+*:focus-visible{outline:3px solid #2563EB!important;outline-offset:2px}
+.skip-link{position:absolute;left:8px;top:-80px;z-index:100;background:#fff;color:#0D2B4E;padding:10px 14px;border-radius:10px;font-weight:700;text-decoration:none;box-shadow:0 4px 14px rgba(0,0,0,.25)}
+.skip-link:focus{top:8px}
 /* On touch screens, fields under 16px make iOS zoom the page when tapped.
    Many fields set a smaller inline size, so lift exactly those (8–15px) to
    16px; bigger ones (the PIN box) keep their size. */
@@ -2179,7 +2184,7 @@ function StarRow({
     key: i,
     style: {
       fontSize: sz,
-      color: i <= (n || 0) ? "#C9A227" : "#D1D5DB"
+      color: i <= (n || 0) ? "#C9A227" : "#D1D5DB" /* empty star glyph — decorative, exempt */
     }
   }, i <= (n || 0) ? "★" : "☆")));
 }
@@ -2211,7 +2216,9 @@ function IntChips({
     }));
   }));
 }
-const PACK_PERSON_ORDER = ["Alex", "Sam", "Jordan", "Riley", "Casey", "Everyone", "Day Bag"];
+// v0.25.0: the trip's own travelers (was the sample's five names, so a real
+// roster's groups fell to the bottom in alphabetical order).
+const PACK_PERSON_ORDER = TRIP.family.map(f => f.name).concat(["Everyone", "Day Bag"]);
 const PACK_CAT_ORDER = ["Clothing", "Shoes", "Extras", "Toiletries", "Tech", "Other"];
 const PACK_GROUP_META = {
   Everyone: {
@@ -2224,6 +2231,97 @@ const PACK_GROUP_META = {
   }
 };
 const packGroupLabel = w => PACK_GROUP_META[w] ? w : w || "Other";
+// One packing row. A per-person item (quick-start items, Day Bag, no owner)
+// shows YOUR check and who else has packed it; an item for one traveler or
+// for the whole group has one shared check. The row is a real checkbox for
+// screen readers and keyboards.
+function PackRow({
+  p,
+  onToggle,
+  onDelete
+}) {
+  const done = !!p.done;
+  const by = Array.isArray(p.doneBy) ? p.doneBy : [];
+  const toggle = () => onToggle(p.id);
+  return React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 4,
+      borderRadius: 9
+    }
+  }, React.createElement("div", {
+    role: "checkbox",
+    "aria-checked": done ? "true" : "false",
+    "aria-label": p.item + (p.perPerson ? by.length ? " \u2014 packed by " + by.join(", ") : " \u2014 each person checks their own" : ""),
+    tabIndex: 0,
+    onClick: toggle,
+    onKeyDown: e => {
+      if (e && (e.key === " " || e.key === "Enter")) {
+        e.preventDefault();
+        toggle();
+      }
+    },
+    style: {
+      flex: 1,
+      minWidth: 0,
+      display: "flex",
+      alignItems: "center",
+      gap: 11,
+      padding: "10px 6px",
+      cursor: "pointer",
+      borderRadius: 9
+    }
+  }, React.createElement("span", {
+    "aria-hidden": "true",
+    style: {
+      width: 26,
+      height: 26,
+      borderRadius: 7,
+      border: done ? "none" : "2px solid #64748B",
+      background: done ? "#16A34A" : "#fff",
+      color: "#fff",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      fontSize: 15,
+      flexShrink: 0
+    }
+  }, done ? "\u2713" : ""), React.createElement("span", {
+    style: {
+      flex: 1,
+      minWidth: 0,
+      lineHeight: 1.35
+    }
+  }, React.createElement("span", {
+    style: {
+      display: "block",
+      fontSize: 14.5,
+      color: done ? "#4B5563" : "#1F2937",
+      textDecoration: done ? "line-through" : "none"
+    }
+  }, p.item), p.perPerson ? React.createElement("span", {
+    style: {
+      display: "block",
+      fontSize: 12,
+      color: "#4B5563",
+      marginTop: 1
+    }
+  }, by.length ? "Packed: " + by.join(", ") : "Each person checks their own") : null)), React.createElement("button", {
+    onClick: () => onDelete(p.id),
+    "aria-label": "Remove " + p.item,
+    style: {
+      background: "none",
+      border: "none",
+      color: "#475569",
+      cursor: "pointer",
+      fontSize: 20,
+      lineHeight: 1,
+      padding: "8px 10px"
+    }
+  }, "\xD7"));
+}
+
 const PACK_TIPS = ["Sample tip: prioritize comfortable shoes — you may walk a lot.", "Sample tip: check the forecast and pack for the climate.", "Sample tip: note the dress code for any nicer dinners.", "Sample tip: pack a couple of shared extras instead of duplicating per person."];
 const CAT = TRIP.categories;
 const EMBASSIES = TRIP.embassies;
@@ -2345,10 +2443,19 @@ function linkify(text) {
     }, tok);
   });
 }
+// v0.25.0: why the family portal didn't sign this browser in (shown above
+// the names; empty = nothing to say).
+function ssoNoteFor(d) {
+  const r = d && d.reason;
+  if (r === "expired") return "Your family-portal sign-in has run out. Sign in on the portal again \u2014 or pick your name below and use this trip's PIN.";
+  if (r === "not-on-trip") return "The family portal signed you in" + (d.name ? " as " + d.name : "") + ", but " + (d.name ? "that name isn't" : "you aren't") + " on this trip's list. Pick your name below and use this trip's PIN \u2014 or ask the trip organizer to add you.";
+  return "";
+}
 function Login({
   onLogin,
   storageBlocked,
-  onPortal
+  onPortal,
+  notice
 }) {
   const [step, setStep] = useState("name");
   const [name, setName] = useState(null);
@@ -2455,7 +2562,7 @@ function Login({
   }, React.createElement("div", {
     style: {
       fontFamily: "'Playfair Display',serif",
-      color: "#C9A227",
+      color: "#8A6A0C",
       fontSize: 14,
       fontWeight: 900,
       letterSpacing: 2
@@ -2471,7 +2578,7 @@ function Login({
     }
   }, TRIP.trip.title), React.createElement("div", {
     style: {
-      color: "#9CA3AF",
+      color: "#4B5563",
       fontSize: 12,
       marginTop: 6
     }
@@ -2487,7 +2594,19 @@ function Login({
       lineHeight: 1.4,
       marginBottom: 14
     }
-  }, "This browser is blocking site storage (a private window or a privacy setting), so signing in can't stick. Open this page in a normal browser window, or allow site data for it, then sign in again."), onPortal && step === "name" && React.createElement("button", {
+  }, "This browser is blocking site storage (a private window or a privacy setting), so signing in can't stick. Open this page in a normal browser window, or allow site data for it, then sign in again."), notice && step === "name" && React.createElement("div", {
+    role: "status",
+    style: {
+      background: "#EFF6FF",
+      border: "1px solid #93C5FD",
+      color: "#1E3A8A",
+      borderRadius: 12,
+      padding: "10px 12px",
+      fontSize: 13.5,
+      lineHeight: 1.45,
+      marginBottom: 14
+    }
+  }, notice), onPortal && step === "name" && React.createElement("button", {
     onClick: onPortal,
     style: {
       display: "block",
@@ -2506,7 +2625,7 @@ function Login({
     style: {
       fontSize: 13,
       fontWeight: 600,
-      color: "#6B7280",
+      color: "#4B5563",
       marginBottom: 10,
       textAlign: "center"
     }
@@ -2549,9 +2668,8 @@ function Login({
       }
     }, React.createElement("span", null, n), React.createElement("span", {
       style: {
-        fontSize: 11,
-        fontWeight: 600,
-        opacity: .7
+        fontSize: 12,
+        fontWeight: 600
       }
     }, rosterLocked ? "Enter PIN" : reg ? "🔒 has PIN" : "+ set PIN"));
   }))), step === "pin" && React.createElement(React.Fragment, null, React.createElement("button", {
@@ -2562,7 +2680,7 @@ function Login({
     style: {
       background: "none",
       border: "none",
-      color: "#9CA3AF",
+      color: "#4B5563",
       fontSize: 13,
       cursor: "pointer",
       marginBottom: 12
@@ -2577,7 +2695,7 @@ function Login({
   }, "Hi, ", name), React.createElement("div", {
     style: {
       fontSize: 13,
-      color: "#6B7280",
+      color: "#4B5563",
       marginBottom: 16
     }
   }, isNew ? "Set a 4-digit PIN — you'll use it to log in from any device." : "Enter your 4-digit PIN."), React.createElement("input", {
@@ -2637,14 +2755,14 @@ function Login({
     }
   }, err), err && !locked && React.createElement("div", {
     style: {
-      color: "#9CA3AF",
+      color: "#4B5563",
       fontSize: 11.5,
       marginTop: 6,
       textAlign: "center"
     }
   }, "Heads up: 5 wrong tries locks this name for 30 minutes \u2014 your PIN shows as you type, so double-check it before Enter."), name && !isNew && React.createElement("div", {
     style: {
-      color: "#6B7280",
+      color: "#4B5563",
       fontSize: 12,
       marginTop: 8,
       textAlign: "center"
@@ -2662,12 +2780,12 @@ function Login({
       fontWeight: 800,
       fontSize: 15,
       background: pin.length === 4 ? "#0D2B4E" : "#E5E7EB",
-      color: pin.length === 4 ? "#fff" : "#9CA3AF"
+      color: pin.length === 4 ? "#fff" : "#9CA3AF" /* disabled look — exempt from text contrast */
     }
   }, busy ? "…" : locked ? "Locked" : isNew ? "Set PIN & Enter" : "Log In"), React.createElement("div", {
     style: {
       fontSize: 11,
-      color: "#9CA3AF",
+      color: "#4B5563",
       marginTop: 12,
       textAlign: "center",
       lineHeight: 1.4
@@ -2854,6 +2972,51 @@ function dayWhenText(dayId, hhmm) {
   return out;
 }
 const DEFAULT_TZ = typeof TRIP.tz === "string" && TRIP.tz ? TRIP.tz : "America/New_York";
+// v0.25.0 — "Put the favorite on the plan" (usability review #2): stars rank
+// a list, but nothing said "we're doing this" until a planner filled the Day
+// Plan by hand. The day's favorite = most stars, then most voters, then name —
+// the same order Decide shows — skipping anything already on that day's plan.
+function favoriteToAdd(day, interests, schedule) {
+  if (!day) return null;
+  const onPlan = {};
+  (schedule || []).forEach(r => {
+    if (r && r.day_id === day.id && r.activity_id) onPlan[r.activity_id] = true;
+  });
+  const ranked = (day.activities || []).map(a => ({
+    a,
+    names: intNamesOf((interests || {})[a.id]),
+    score: intScoreOf((interests || {})[a.id])
+  })).filter(x => x.score > 0 && !onPlan[x.a.id]).sort((x, y) => y.score - x.score || y.names.length - x.names.length || String(x.a.name).localeCompare(String(y.a.name)));
+  return ranked[0] || null;
+}
+// The same entry the Day Plan form would make: everyone, the activity's own
+// start time when it has one.
+// A reload replaces the plan with the server's rows. A row still being saved
+// (added while offline, its write waiting in the outbox) is kept until the
+// server has it, so the favorite isn't offered — and added — a second time.
+function mergePendingPlan(serverRows, prevRows, outbox) {
+  const srv = Array.isArray(serverRows) ? serverRows : [];
+  const queued = (outbox || []).filter(it => it && /\/api\/schedule$/.test(String(it.u || "")) && it.o && it.o.method === "POST").map(it => {
+    try {
+      return JSON.parse(it.o.body);
+    } catch (e) {
+      return null;
+    }
+  }).filter(Boolean);
+  const keep = (prevRows || []).filter(x => x && x.pending && queued.some(q => q.dayId === x.day_id && q.activityId === x.activity_id) && !srv.some(r => r.day_id === x.day_id && r.activity_id === x.activity_id));
+  return srv.concat(keep);
+}
+function favoritePlanBody(day, a) {
+  const t = /^\d{2}:\d{2}$/.test(String(a.start || "")) ? a.start : "";
+  return {
+    dayId: day.id,
+    activityId: a.id,
+    title: a.name,
+    time: t,
+    who: FAMILY.slice(),
+    whenText: dayWhenText(day.id, t)
+  };
+}
 // v0.24.0: temperatures in °C when the trip says "units": "C"; °F otherwise.
 const TEMP_UNIT = TRIP.units === "C" ? "C" : "F";
 // v0.24.0: the server stamps flight checks as an ISO time; show it in the
@@ -3309,7 +3472,7 @@ function ShareToggle() {
   }), "\uD83D\uDCCD Share my location"), React.createElement("div", {
     style: {
       fontSize: 11,
-      color: "#6B7280",
+      color: "#4B5563",
       marginTop: 5,
       lineHeight: 1.5
     }
@@ -3957,7 +4120,7 @@ function TripMap({
   }, "Our Travels"), React.createElement("div", {
     style: {
       fontSize: 13,
-      color: "#6B7280",
+      color: "#4B5563",
       marginTop: 3,
       lineHeight: 1.4
     }
@@ -4001,7 +4164,7 @@ function TripMap({
   }, (p.emoji ? p.emoji + " " : "") + p.label))), filterDayEmpty && React.createElement("div", {
     style: {
       fontSize: 12,
-      color: "#6B7280",
+      color: "#4B5563",
       fontWeight: 600,
       marginBottom: 10,
       background: "#F9FAFB",
@@ -4023,6 +4186,9 @@ function TripMap({
   }, "\uD83D\uDCCD Centered on ", focus.name, " \u2014 use the buttons above to zoom back out."), React.createElement("div", {
     ref: elRef,
     style: {
+      position: "relative",
+      zIndex: 0,
+      isolation: "isolate",
       height: "58vh",
       minHeight: 360,
       width: "100%",
@@ -4144,7 +4310,7 @@ function TripMap({
     style: {
       display: "block",
       fontSize: 11,
-      color: "#6B7280"
+      color: "#4B5563"
     }
   }, pinLabel(item))), schedActs[item.aid] && React.createElement("span", {
     title: planTitle(item),
@@ -4167,7 +4333,7 @@ function TripMap({
   }, "Open the region in Google Maps \u2197"), React.createElement("div", {
     style: {
       fontSize: 11,
-      color: "#9CA3AF",
+      color: "#4B5563",
       marginTop: 10,
       lineHeight: 1.4
     }
@@ -4187,6 +4353,526 @@ function VersionTag() {
       fontWeight: 700
     }
   }, "\xB7 v" + v);
+}
+// v0.25.0: the tab list lives here once. On a phone only the PRIMARY tabs sit
+// in the bar; the rest open from "More" (nine labels used to scroll sideways
+// and hid Flights, Notes and Review). A wide screen shows every tab inline.
+const TAB_LIST = [{
+  id: "now",
+  label: "\uD83C\uDFE0 Now"
+}, {
+  id: "itinerary",
+  label: "\uD83D\uDDFA Itinerary"
+}, {
+  id: "map",
+  label: "\uD83E\uDDED Map"
+}, {
+  id: "decide",
+  label: "\uD83D\uDDF3\uFE0F Decide"
+}, {
+  id: "bookings",
+  label: "\uD83C\uDFAB Bookings"
+}, {
+  id: "packing",
+  label: "\uD83E\uDDF3 Packing"
+}, {
+  id: "essentials",
+  label: "\uD83D\uDEDF Essentials"
+}, {
+  id: "flights",
+  label: "\u2708\uFE0F Flights"
+}, {
+  id: "notes",
+  label: "\uD83D\uDCDD Notes"
+}, {
+  id: "summary",
+  label: "\u2B50 Summary"
+}];
+const PRIMARY_TABS = ["now", "itinerary", "map", "decide"];
+const WIDE_QUERY = "(min-width: 760px)";
+function TabBar({
+  tabs,
+  tab,
+  onPick,
+  wide,
+  moreOpen,
+  setMoreOpen
+}) {
+  const moreRef = React.useRef(null);
+  const listRef = React.useRef(null);
+  // While the list is open: focus its first entry, Escape closes it and puts
+  // focus back on More.
+  useEffect(() => {
+    if (!moreOpen) return;
+    try {
+      const first = listRef.current && listRef.current.querySelector && listRef.current.querySelector("button");
+      if (first && first.focus) first.focus();
+    } catch (e) {}
+    const onKey = e => {
+      if (e && e.key === "Escape") {
+        setMoreOpen(false);
+        try {
+          moreRef.current && moreRef.current.focus && moreRef.current.focus();
+        } catch (_e) {}
+      }
+    };
+    try {
+      document.addEventListener("keydown", onKey);
+    } catch (e) {}
+    return () => {
+      try {
+        document.removeEventListener("keydown", onKey);
+      } catch (e) {}
+    };
+  }, [moreOpen]);
+  // "🗺 Itinerary" → icon + word; on a phone the icon sits above the word so
+  // five buttons fit a 360px screen without cutting the words off.
+  const parts = l => {
+    const i = String(l).indexOf(" ");
+    return i > 0 ? [l.slice(0, i), l.slice(i + 1)] : ["", l];
+  };
+  const face = (label, suffix) => {
+    const [icon, word] = parts(label);
+    const arrow = suffix ? React.createElement("span", {
+      key: "s",
+      "aria-hidden": "true"
+    }, suffix) : null;
+    return wide ? [label, arrow] : [React.createElement("span", {
+      key: "i",
+      "aria-hidden": "true",
+      style: {
+        display: "block",
+        fontSize: 18,
+        lineHeight: 1.1
+      }
+    }, icon || "\u2022", suffix || ""), React.createElement("span", {
+      key: "w",
+      style: {
+        display: "block",
+        fontSize: 13,
+        lineHeight: 1.25,
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        whiteSpace: "nowrap"
+      }
+    }, word)];
+  };
+  const btnStyle = on => ({
+    flex: wide ? "0 0 auto" : "1 1 0",
+    minWidth: 0,
+    padding: wide ? "12px 8px" : "8px 2px 6px",
+    fontSize: 13,
+    fontWeight: 600,
+    border: "none",
+    background: "none",
+    cursor: "pointer",
+    whiteSpace: "nowrap",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    textAlign: "center",
+    borderBottom: on ? "3px solid #0D2B4E" : "3px solid transparent",
+    color: on ? "#0D2B4E" : "#4B5563"
+  });
+  const btn = t => React.createElement("button", {
+    key: t.id,
+    onClick: () => onPick(t.id),
+    "aria-current": tab === t.id ? "page" : undefined,
+    style: btnStyle(tab === t.id)
+  }, face(t.label));
+  if (wide) return React.createElement("nav", {
+    "aria-label": "Trip sections",
+    style: {
+      maxWidth: 900,
+      margin: "0 auto",
+      display: "flex",
+      padding: "0 12px",
+      overflowX: "auto",
+      scrollbarWidth: "none"
+    }
+  }, tabs.map(t => btn(t)));
+  const primary = tabs.filter(t => PRIMARY_TABS.indexOf(t.id) >= 0);
+  const rest = tabs.filter(t => PRIMARY_TABS.indexOf(t.id) < 0);
+  const cur = rest.find(t => t.id === tab);
+  return React.createElement("nav", {
+    "aria-label": "Trip sections",
+    style: {
+      position: "relative",
+      maxWidth: 900,
+      margin: "0 auto",
+      display: "flex",
+      padding: "0 4px"
+    }
+  }, primary.map(t => btn(t)), React.createElement("button", {
+    key: "more",
+    ref: moreRef,
+    onClick: () => setMoreOpen(!moreOpen),
+    "aria-expanded": moreOpen ? "true" : "false",
+    "aria-controls": "more-tabs",
+    "aria-current": cur ? "page" : undefined,
+    style: btnStyle(!!cur)
+  }, face(cur ? cur.label : "\u2630 More", " \u25BE")), moreOpen && React.createElement("div", {
+    key: "shade",
+    "aria-hidden": "true",
+    onClick: () => setMoreOpen(false),
+    style: {
+      position: "fixed",
+      inset: 0,
+      zIndex: 40
+    }
+  }), moreOpen && React.createElement("div", {
+    key: "list",
+    id: "more-tabs",
+    ref: listRef,
+    onBlur: e => {
+      // tabbing out of the list closes it
+      const to = e && e.relatedTarget;
+      try {
+        if (to && listRef.current && !listRef.current.contains(to) && to !== moreRef.current) setMoreOpen(false);
+      } catch (_e) {}
+    },
+    style: {
+      position: "absolute",
+      top: "100%",
+      right: 4,
+      zIndex: 41,
+      background: "#fff",
+      border: "1px solid #E5E7EB",
+      borderRadius: 14,
+      boxShadow: "0 10px 30px rgba(0,0,0,.18)",
+      padding: 6,
+      minWidth: 210
+    }
+  }, rest.map(t => React.createElement("button", {
+    key: t.id,
+    onClick: () => onPick(t.id),
+    "aria-current": tab === t.id ? "page" : undefined,
+    style: {
+      display: "block",
+      width: "100%",
+      textAlign: "left",
+      padding: "12px 14px",
+      fontSize: 15,
+      fontWeight: tab === t.id ? 800 : 600,
+      color: "#0D2B4E",
+      background: tab === t.id ? "#EEF2F7" : "none",
+      border: "none",
+      borderRadius: 10,
+      cursor: "pointer"
+    }
+  }, t.label))));
+}
+// ── v0.25.0 "Right now" home ────────────────────────────────────────────────
+// Usability review #1: during the trip the app should open on what matters
+// NOW — today's plan, the next timed item and one directions link — instead
+// of the whole itinerary. Every helper takes the time as an argument so the
+// screen can be checked for any moment of the trip.
+const _ymdIn = ms => {
+  try {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: DEFAULT_TZ
+    }).format(new Date(ms));
+  } catch (e) {
+    return new Intl.DateTimeFormat("en-CA").format(new Date(ms));
+  }
+};
+const _hmIn = ms => {
+  try {
+    return new Intl.DateTimeFormat("en-GB", {
+      timeZone: DEFAULT_TZ,
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false
+    }).format(new Date(ms));
+  } catch (e) {
+    return "00:00";
+  }
+};
+const _isoOk = v => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ""));
+function tripPhase(ms) {
+  const s0 = TRIP.trip && TRIP.trip.startDate,
+    e0 = TRIP.trip && TRIP.trip.endDate;
+  if (!_isoOk(s0) || !_isoOk(e0)) return "unknown";
+  const t = _ymdIn(ms);
+  return t < s0 ? "before" : t > e0 ? "after" : "during";
+}
+// Which day of the plan is today: by its map date, else by its place in the
+// trip (day N = start + N-1) when days carry no dates.
+function todayDay(ms) {
+  const t = _ymdIn(ms);
+  const byDate = Object.keys(DAY_COORDS || {}).find(k => DAY_COORDS[k] && DAY_COORDS[k].date === t);
+  if (byDate) return DAYS.find(d => d.id === byDate) || null;
+  if (tripPhase(ms) !== "during") return null;
+  const p = String(TRIP.trip.startDate).split("-"),
+    q = t.split("-");
+  const n = Math.round((Date.UTC(+q[0], +q[1] - 1, +q[2]) - Date.UTC(+p[0], +p[1] - 1, +p[2])) / 86400000);
+  const d = DAYS[n] || null;
+  return d && !(DAY_COORDS && DAY_COORDS[d.id] && DAY_COORDS[d.id].date) ? d : null;
+}
+// The tab the app opens on: "now" while the trip is on, otherwise the last one.
+function initialTab(saved, ms, valid) {
+  if (tripPhase(ms) === "during") return "now";
+  return saved && valid.indexOf(saved) >= 0 ? saved : "itinerary";
+}
+const fmt12 = hm => {
+  const q = String(hm || "").split(":");
+  if (q.length < 2 || isNaN(+q[0])) return "";
+  return (+q[0] + 11) % 12 + 1 + ":" + q[1] + " " + (+q[0] >= 12 ? "PM" : "AM");
+};
+// One directions link: coordinates when the activity has them, else a search.
+function directionsUrl(ll, query) {
+  if (Array.isArray(ll) && ll.length === 2 && isFinite(+ll[0]) && isFinite(+ll[1])) return "https://www.google.com/maps/dir/?api=1&destination=" + +ll[0] + "," + +ll[1];
+  return query ? "https://www.google.com/maps/dir/?api=1&destination=" + encodeURIComponent(query) : "";
+}
+function planRowsFor(dayId, schedule) {
+  return (schedule || []).filter(r => r && r.day_id === dayId).slice().sort((a, b) => a.time_text && b.time_text ? String(a.time_text).localeCompare(String(b.time_text)) : a.time_text ? -1 : b.time_text ? 1 : 0);
+}
+function NowHome({
+  schedule,
+  reservations,
+  interests,
+  nowMs,
+  onOpenDay,
+  onTab
+}) {
+  const phase = tripPhase(nowMs);
+  const box = {
+    background: "#fff",
+    borderRadius: 16,
+    padding: "16px 16px",
+    margin: "12px 12px 0",
+    boxShadow: "0 1px 3px rgba(0,0,0,.08)"
+  };
+  const h2 = {
+    fontSize: 12,
+    fontWeight: 800,
+    letterSpacing: 1,
+    color: "#4B5563",
+    textTransform: "uppercase",
+    margin: "0 0 8px"
+  };
+  const bigBtn = (label, onClick) => React.createElement("button", {
+    onClick,
+    style: {
+      display: "block",
+      width: "100%",
+      marginTop: 14,
+      padding: "12px 14px",
+      borderRadius: 12,
+      border: "none",
+      background: "#0D2B4E",
+      color: "#fff",
+      fontSize: 15,
+      fontWeight: 700,
+      cursor: "pointer"
+    }
+  }, label);
+  const dayTitle = d => d ? d.label + (d.location ? " \u2014 " + d.location : "") : "";
+  const rowTitle = (r, d) => {
+    const linked = (reservations || []).find(x => x.id === r.res_id);
+    if (linked && linked.title) return linked.title;
+    const a = d && r.activity_id ? (d.activities || []).find(x => x.id === r.activity_id) : null;
+    return r.title || (a && a.name) || "";
+  };
+  const planList = (d, rows, hm) => React.createElement("ul", {
+    style: {
+      listStyle: "none",
+      margin: 0,
+      padding: 0
+    }
+  }, rows.map(r => {
+    const past = !!(hm && r.time_text && r.time_text < hm);
+    return React.createElement("li", {
+      key: r.id,
+      style: {
+        display: "flex",
+        gap: 10,
+        padding: "8px 0",
+        borderTop: "1px solid #F1F5F9",
+        fontSize: 15,
+        color: past ? "#4B5563" : "#1F2937"
+      }
+    }, React.createElement("span", {
+      style: {
+        width: 78,
+        flexShrink: 0,
+        fontWeight: 700
+      }
+    }, r.time_text ? fmt12(r.time_text) : "Any time"), React.createElement("span", {
+      style: {
+        textDecoration: past ? "line-through" : "none"
+      }
+    }, rowTitle(r, d)));
+  }));
+  if (phase === "during") {
+    const d = todayDay(nowMs);
+    const hm = _hmIn(nowMs);
+    const rows = d ? planRowsFor(d.id, schedule) : [];
+    const upcoming = rows.filter(r => r.time_text && r.time_text >= hm);
+    const nxt = upcoming[0] || rows.find(r => !r.time_text) || null;
+    let nxtAct = null;
+    if (nxt && d && nxt.activity_id) nxtAct = (d.activities || []).find(a => a.id === nxt.activity_id) || null;
+    const linked = nxt ? (reservations || []).find(x => x.id === nxt.res_id) : null;
+    const dir = nxt ? directionsUrl(nxtAct && nxtAct.ll, [rowTitle(nxt, d), d && d.location].filter(Boolean).join(" ")) : "";
+    const favs = d && !rows.length ? (d.activities || []).map(a => ({
+      a,
+      score: intScoreOf((interests || {})[a.id])
+    })).filter(x => x.score > 0).sort((x, y) => y.score - x.score).slice(0, 3) : [];
+    return React.createElement("section", {
+      "aria-label": "Right now",
+      style: {
+        maxWidth: 640,
+        margin: "0 auto",
+        padding: "0 0 100px"
+      }
+    }, React.createElement("div", {
+      style: Object.assign({}, box, {
+        background: "#0D2B4E",
+        color: "#fff"
+      })
+    }, React.createElement("div", {
+      style: {
+        fontSize: 12,
+        fontWeight: 800,
+        letterSpacing: 1,
+        color: "#E8C75A"
+      }
+    }, "TODAY", (() => {
+      const p = String(TRIP.trip.startDate).split("-"),
+        e = String(TRIP.trip.endDate).split("-"),
+        q = _ymdIn(nowMs).split("-");
+      const du = a => Date.UTC(+a[0], +a[1] - 1, +a[2]);
+      const n = Math.round((du(q) - du(p)) / 86400000) + 1,
+        tot = Math.round((du(e) - du(p)) / 86400000) + 1;
+      return n >= 1 && tot >= n ? " \xB7 DAY " + n + " OF " + tot : "";
+    })()), React.createElement("h1", {
+      style: {
+        fontSize: 22,
+        fontWeight: 800,
+        margin: "4px 0 0"
+      }
+    }, d ? dayTitle(d) : "On the trip")), React.createElement("div", {
+      style: box
+    }, React.createElement("h2", {
+      style: h2
+    }, "Next up"), nxt ? React.createElement("div", null, React.createElement("div", {
+      style: {
+        fontSize: 20,
+        fontWeight: 800,
+        color: "#0D2B4E"
+      }
+    }, nxt.time_text ? fmt12(nxt.time_text) : "Today", " \xB7 ", rowTitle(nxt, d)), nxtAct && nxtAct.practical ? React.createElement("div", {
+      style: {
+        fontSize: 14,
+        color: "#374151",
+        marginTop: 4,
+        lineHeight: 1.4
+      }
+    }, String(nxtAct.practical).split(". ")[0]) : linked && linked.confirmation ? React.createElement("div", {
+      style: {
+        fontSize: 14,
+        color: "#374151",
+        marginTop: 4
+      }
+    }, "Confirmation #", linked.confirmation) : null, dir ? React.createElement("a", {
+      href: dir,
+      target: "_blank",
+      rel: "noopener",
+      style: {
+        display: "inline-block",
+        marginTop: 12,
+        padding: "10px 14px",
+        borderRadius: 12,
+        background: "#1A73E8",
+        color: "#fff",
+        fontSize: 15,
+        fontWeight: 700,
+        textDecoration: "none"
+      }
+    }, "Get directions \u2197") : null) : React.createElement("div", {
+      style: {
+        fontSize: 15,
+        color: "#374151"
+      }
+    }, rows.length ? "Nothing else on today's plan." : "Nothing is on today's Day Plan yet.")), React.createElement("div", {
+      style: box
+    }, React.createElement("h2", {
+      style: h2
+    }, "Today's plan"), rows.length ? planList(d, rows, hm) : favs.length ? React.createElement("div", null, React.createElement("div", {
+      style: {
+        fontSize: 14,
+        color: "#374151",
+        marginBottom: 6
+      }
+    }, "No plan yet \u2014 the family's favorites for today:"), React.createElement("ul", {
+      style: {
+        margin: 0,
+        paddingLeft: 18,
+        fontSize: 15,
+        color: "#1F2937"
+      }
+    }, favs.map(x => React.createElement("li", {
+      key: x.a.id,
+      style: {
+        padding: "3px 0"
+      }
+    }, x.a.name, " \u2014 ", x.score, " \u2605")))) : React.createElement("div", {
+      style: {
+        fontSize: 15,
+        color: "#374151"
+      }
+    }, "Nothing planned yet \u2014 see the day in the Itinerary."), d ? bigBtn("Open " + d.label + " in the Itinerary", () => onOpenDay(d.id)) : null));
+  }
+  if (phase === "before") {
+    const first = DAYS[0];
+    const rows = first ? planRowsFor(first.id, schedule) : [];
+    const p = String(TRIP.trip.startDate).split("-"),
+      q = _ymdIn(nowMs).split("-");
+    const n = Math.round((Date.UTC(+p[0], +p[1] - 1, +p[2]) - Date.UTC(+q[0], +q[1] - 1, +q[2])) / 86400000);
+    return React.createElement("section", {
+      "aria-label": "Right now",
+      style: {
+        maxWidth: 640,
+        margin: "0 auto",
+        padding: "0 0 100px"
+      }
+    }, React.createElement("div", {
+      style: box
+    }, React.createElement("h1", {
+      style: {
+        fontSize: 22,
+        fontWeight: 800,
+        color: "#0D2B4E",
+        margin: 0
+      }
+    }, n === 1 ? "1 day until the trip" : n + " days until the trip"), first ? React.createElement("div", {
+      style: {
+        fontSize: 15,
+        color: "#374151",
+        marginTop: 6
+      }
+    }, "First up: ", dayTitle(first)) : null, rows.length ? React.createElement("div", {
+      style: {
+        marginTop: 10
+      }
+    }, planList(first, rows, "")) : null, first ? bigBtn("See the plan", () => onOpenDay(first.id)) : null));
+  }
+  return React.createElement("section", {
+    "aria-label": "Right now",
+    style: {
+      maxWidth: 640,
+      margin: "0 auto",
+      padding: "0 0 100px"
+    }
+  }, React.createElement("div", {
+    style: box
+  }, React.createElement("h1", {
+    style: {
+      fontSize: 22,
+      fontWeight: 800,
+      color: "#0D2B4E",
+      margin: 0
+    }
+  }, phase === "after" ? "The trip is over \u2014 welcome home" : "Pick a day to see its plan"), phase === "after" && RETRO_UNLOCKED ? bigBtn("Rate what you did", () => onTab("review")) : bigBtn("Open the Itinerary", () => onTab("itinerary"))));
 }
 function Countdown() {
   const sISO = String(TRIP.trip && TRIP.trip.startDate || ""),
@@ -4210,12 +4896,12 @@ function Countdown() {
   if (today > end) return null;
   const total = Math.round((end - dep) / 86400000) + 1;
   let text,
-    bg = "#C9A227",
+    bg = "#8A6A0C",
     icon = "✈️";
   if (today >= dep) {
     const n = Math.round((today - dep) / 86400000) + 1;
     text = "You're on the trip — Day " + n + " of " + total + "!";
-    bg = "#16A34A";
+    bg = "#15803D";
     icon = "🌊";
   } else {
     const days = Math.round((dep - today) / 86400000);
@@ -4354,7 +5040,7 @@ function PhraseCard({
     style: {
       fontSize: 10,
       fontWeight: 800,
-      color: "#9CA3AF",
+      color: "#4B5563",
       textTransform: "uppercase",
       letterSpacing: .5
     }
@@ -4366,12 +5052,12 @@ function PhraseCard({
     }
   }, p.gr), React.createElement("span", {
     style: {
-      color: "#6B7280",
+      color: "#4B5563",
       fontSize: 13
     }
   }, "\u2014 ", p.en), React.createElement("span", {
     style: {
-      color: "#9CA3AF",
+      color: "#4B5563",
       fontSize: 12,
       fontStyle: "italic"
     }
@@ -4388,7 +5074,7 @@ function PhraseCard({
     }
   }, React.createElement("span", null, "\uD83D\uDCA1"), React.createElement("span", null, f, fid !== day.id && fday ? React.createElement("span", {
     style: {
-      color: "#9CA3AF"
+      color: "#4B5563"
     }
   }, " \u2014 ", fday.emoji, " ", fday.location) : null)));
 }
@@ -4545,7 +5231,7 @@ function DayPlanCard({
   }, "\uD83D\uDCCB DAY PLAN ", React.createElement("span", {
     style: {
       fontWeight: 600,
-      color: "#9CA3AF",
+      color: "#4B5563",
       textTransform: "none",
       letterSpacing: 0
     }
@@ -4564,7 +5250,7 @@ function DayPlanCard({
   }, open ? "Close" : "+ Add")), items.length === 0 && React.createElement("div", {
     style: {
       fontSize: 12,
-      color: "#9CA3AF",
+      color: "#4B5563",
       marginTop: 8
     }
   }, "Nothing scheduled for this day yet."), items.map((it, idx) => {
@@ -4595,7 +5281,7 @@ function DayPlanCard({
       style: {
         fontSize: 10.5,
         fontWeight: 700,
-        color: "#6B7280",
+        color: "#4B5563",
         background: "#F3F4F6",
         border: "1px solid #E5E7EB",
         borderRadius: 10,
@@ -4709,7 +5395,7 @@ function DayPlanCard({
       return React.createElement("div", {
         style: {
           fontSize: 10,
-          color: "#9CA3AF",
+          color: "#4B5563",
           marginTop: 3
         }
       }, "added by ", React.createElement("span", {
@@ -4762,7 +5448,7 @@ function DayPlanCard({
     }), React.createElement("span", {
       style: {
         fontSize: 10.5,
-        color: "#9CA3AF"
+        color: "#4B5563"
       }
     }, "time")), React.createElement("div", {
       style: {
@@ -4780,7 +5466,7 @@ function DayPlanCard({
         style: {
           border: "1.5px solid " + (onSel ? col[1] : "#E5E7EB"),
           background: onSel ? col[0] : "#fff",
-          color: onSel ? col[1] : "#9CA3AF",
+          color: onSel ? col[1] : "#4B5563",
           borderRadius: 12,
           padding: "3px 9px",
           fontSize: 11,
@@ -4809,7 +5495,7 @@ function DayPlanCard({
       style: {
         border: "none",
         background: eWho.length === 0 ? "#E5E7EB" : "#0D2B4E",
-        color: eWho.length === 0 ? "#9CA3AF" : "#fff",
+        color: eWho.length === 0 ? "#9CA3AF" /* disabled look — exempt from text contrast */ : "#fff",
         borderRadius: 8,
         padding: "5px 13px",
         fontSize: 11.5,
@@ -4881,7 +5567,7 @@ function DayPlanCard({
     }), React.createElement("span", {
       style: {
         fontSize: 10.5,
-        color: "#9CA3AF"
+        color: "#4B5563"
       }
     }, "time on the new day")), React.createElement("div", {
       style: {
@@ -4899,7 +5585,7 @@ function DayPlanCard({
       style: {
         border: "none",
         background: !mDay ? "#E5E7EB" : "#0D2B4E",
-        color: !mDay ? "#9CA3AF" : "#fff",
+        color: !mDay ? "#9CA3AF" /* disabled look — exempt from text contrast */ : "#fff",
         borderRadius: 8,
         padding: "5px 13px",
         fontSize: 11.5,
@@ -4918,13 +5604,21 @@ function DayPlanCard({
         fontWeight: 700,
         cursor: "pointer"
       }
-    }, "Cancel")))), canEdit && !editing && !moving && confirmId !== it.id && React.createElement("span", {
+    }, "Cancel")))), it.pending && React.createElement("span", {
+      style: {
+        flexShrink: 0,
+        fontSize: 12,
+        fontWeight: 700,
+        color: "#4B5563"
+      }
+    }, "saving\u2026"), canEdit && !it.pending && !editing && !moving && confirmId !== it.id && React.createElement("span", {
       style: {
         flexShrink: 0,
         display: "flex",
         gap: 2
       }
     }, React.createElement("button", {
+      "aria-label": "Edit this plan item",
       onClick: () => {
         setEditId(it.id);
         setETime(it.time_text || "");
@@ -4935,13 +5629,14 @@ function DayPlanCard({
       style: {
         border: "none",
         background: "none",
-        color: "#9CA3AF",
+        color: "#4B5563",
         fontSize: 13,
         cursor: "pointer",
         lineHeight: 1,
         padding: "0 3px"
       }
     }, "\u270E"), DAYS.length > 1 && React.createElement("button", {
+      "aria-label": "Move to another day",
       onClick: () => {
         setMoveId(it.id);
         setMDay(null);
@@ -4953,19 +5648,20 @@ function DayPlanCard({
       style: {
         border: "none",
         background: "none",
-        color: "#9CA3AF",
+        color: "#4B5563",
         fontSize: 13,
         cursor: "pointer",
         lineHeight: 1,
         padding: "0 3px"
       }
     }, "\u21C4"), React.createElement("button", {
+      "aria-label": "Remove from the plan",
       onClick: () => setConfirmId(it.id),
       title: "Remove",
       style: {
         border: "none",
         background: "none",
-        color: "#CBD5E1",
+        color: "#475569",
         fontSize: 16,
         cursor: "pointer",
         lineHeight: 1,
@@ -5144,7 +5840,7 @@ function DayPlanCard({
   }), React.createElement("span", {
     style: {
       fontSize: 11,
-      color: "#9CA3AF"
+      color: "#4B5563"
     }
   }, "time optional")), (() => {
     if (!actId || actId === "__custom") return null;
@@ -5213,7 +5909,7 @@ function DayPlanCard({
       style: {
         border: "1.5px solid " + (onSel ? col[1] : "#E5E7EB"),
         background: onSel ? col[0] : "#fff",
-        color: onSel ? col[1] : "#9CA3AF",
+        color: onSel ? col[1] : "#4B5563",
         borderRadius: 14,
         padding: "4px 11px",
         fontSize: 12,
@@ -5232,7 +5928,7 @@ function DayPlanCard({
       border: "none",
       borderRadius: 10,
       background: !actId || actId === "__custom" && !custom.trim() || whoSel.length === 0 ? "#E5E7EB" : "#0D2B4E",
-      color: !actId || actId === "__custom" && !custom.trim() || whoSel.length === 0 ? "#9CA3AF" : "#fff",
+      color: !actId || actId === "__custom" && !custom.trim() || whoSel.length === 0 ? "#9CA3AF" /* disabled look — exempt from text contrast */ : "#fff",
       fontSize: 13.5,
       fontWeight: 800,
       cursor: "pointer"
@@ -5455,14 +6151,14 @@ function MustDoSection({
   }, "⭐ MUST SEE & DO ", React.createElement("span", {
     style: {
       fontWeight: 600,
-      color: "#9CA3AF",
+      color: "#4B5563",
       letterSpacing: 0
     }
   }, "\xB7 the whole trip")), React.createElement("span", {
     style: {
       display: "block",
       fontSize: 11.5,
-      color: "#6B7280",
+      color: "#4B5563",
       marginTop: 2
     }
   }, MUSTDO_ITEMS.length, " landmark", MUSTDO_ITEMS.length === 1 ? "" : "s", " across ", MUSTDO_GROUPS.length, " ", MUSTDO_GROUPS.length === 1 ? "place" : "places", user ? " \xB7 you have starred " + mine : "", voted ? " \xB7 " + voted + " voted on" : "")), React.createElement("span", {
@@ -5475,7 +6171,7 @@ function MustDoSection({
   }, open ? "▲" : "▼")), open && React.createElement("div", {
     style: {
       fontSize: 11.5,
-      color: "#6B7280",
+      color: "#4B5563",
       lineHeight: 1.5,
       marginTop: 8
     }
@@ -5501,7 +6197,7 @@ function MustDoSection({
   }, g.emoji ? g.emoji + " " : "", g.location), React.createElement("span", {
     style: {
       fontSize: 11,
-      color: "#9CA3AF",
+      color: "#4B5563",
       fontWeight: 600
     }
   }, g.items.length, " ", g.items.length === 1 ? "item" : "items"), currentDay && g.location && String(currentDay.location || "").normalize("NFC") === String(g.location).normalize("NFC") && React.createElement("span", {
@@ -5603,7 +6299,7 @@ function MustDoSection({
     }, React.createElement("span", {
       style: {
         fontSize: 10.5,
-        color: "#9CA3AF"
+        color: "#4B5563"
       }
     }, "Interested:"), React.createElement(IntChips, {
       list: interests[it.id]
@@ -5630,7 +6326,7 @@ function MustDoSection({
       style: {
         fontSize: 11.5,
         fontWeight: 700,
-        color: ms > 0 ? "#92400E" : "#6B7280",
+        color: ms > 0 ? "#92400E" : "#4B5563",
         flexShrink: 0
       }
     }, ms > 0 ? "Your pick" : "Interested?"), React.createElement("span", {
@@ -5642,6 +6338,8 @@ function MustDoSection({
       key: k,
       onClick: () => onStars(it.id, ms === k ? 0 : k),
       title: k + (k > 1 ? " stars" : " star"),
+      "aria-label": "Rate " + k + (k > 1 ? " stars" : " star"),
+      "aria-pressed": ms === k ? "true" : "false",
       style: {
         border: "none",
         background: "none",
@@ -5649,7 +6347,7 @@ function MustDoSection({
         padding: "1px 2px",
         fontSize: 21,
         lineHeight: 1,
-        color: k <= ms ? "#C9A227" : "#CBD5E1"
+        color: k <= ms ? "#C9A227" : "#CBD5E1" /* empty star glyph — decorative, exempt */
       }
     }, k <= ms ? "★" : "☆"))), sc > 0 ? React.createElement("span", {
       title: "Family interest score",
@@ -5664,12 +6362,14 @@ function MustDoSection({
       }
     }, "★ ", sc) : null), React.createElement("button", {
       onClick: () => setOpenItem(shown ? null : it.id),
+      "aria-label": shown ? "Hide details" : "Show details",
+      "aria-expanded": shown ? "true" : "false",
       style: {
         width: 34,
         borderRadius: 11,
         border: "none",
         background: "#F3F4F6",
-        color: "#6B7280",
+        color: "#4B5563",
         cursor: "pointer",
         fontWeight: 800,
         fontSize: 12
@@ -5752,7 +6452,7 @@ function DayStrip({
       border: "none",
       borderRight: "1px solid #E5E7EB",
       background: atStart ? "#F9FAFB" : "#fff",
-      color: atStart ? "#D1D5DB" : "#0D2B4E",
+      color: atStart ? "#D1D5DB" /* disabled look — exempt from text contrast */ : "#0D2B4E",
       fontSize: 20,
       fontWeight: 800,
       cursor: atStart ? "default" : "pointer",
@@ -5825,7 +6525,7 @@ function DayStrip({
       border: "none",
       borderLeft: "1px solid #E5E7EB",
       background: atEnd ? "#F9FAFB" : "#fff",
-      color: atEnd ? "#D1D5DB" : "#0D2B4E",
+      color: atEnd ? "#D1D5DB" /* disabled look — exempt from text contrast */ : "#0D2B4E",
       fontSize: 20,
       fontWeight: 800,
       cursor: atEnd ? "default" : "pointer",
@@ -5980,7 +6680,7 @@ function ReviewTab({
   if (loadErr) return React.createElement("div", {
     style: {
       textAlign: "center",
-      color: "#9CA3AF",
+      color: "#4B5563",
       fontSize: 13,
       padding: "40px 12px"
     }
@@ -5988,7 +6688,7 @@ function ReviewTab({
   if (!data) return React.createElement("div", {
     style: {
       textAlign: "center",
-      color: "#9CA3AF",
+      color: "#4B5563",
       fontSize: 13,
       padding: "40px 12px"
     }
@@ -6067,7 +6767,7 @@ function ReviewTab({
   }, "\u2b50 How was the trip, ", user, "?"), React.createElement("div", {
     style: {
       fontSize: 12,
-      color: "#6B7280",
+      color: "#4B5563",
       margin: "4px 0 10px"
     }
   }, "Only rate what you actually did \u2014 answering \u201cNo\u201d is never counted against an idea. Answers save as you go."), React.createElement("div", {
@@ -6086,7 +6786,7 @@ function ReviewTab({
   })), React.createElement("div", {
     style: {
       fontSize: 11,
-      color: "#6B7280",
+      color: "#4B5563",
       fontWeight: 600,
       marginTop: 4
     }
@@ -6116,7 +6816,7 @@ function ReviewTab({
   }, g.day.label), g.day.location && React.createElement("span", {
     style: {
       fontSize: 11,
-      color: "#9CA3AF"
+      color: "#4B5563"
     }
   }, "\xB7 ", g.day.location)), g.items.map(it => {
     const id = it.activityId;
@@ -6141,7 +6841,7 @@ function ReviewTab({
     }, it.title), React.createElement("span", {
       style: {
         fontSize: 11,
-        color: "#9CA3AF",
+        color: "#4B5563",
         flexShrink: 0
       }
     }, it.timeText || "")), !answered && !skipped[id] && React.createElement("div", {
@@ -6172,7 +6872,7 @@ function ReviewTab({
       style: {
         border: "none",
         background: "none",
-        color: "#9CA3AF",
+        color: "#4B5563",
         fontSize: 12,
         fontWeight: 600,
         cursor: "pointer"
@@ -6180,7 +6880,7 @@ function ReviewTab({
     }, "Skip")), skipped[id] && React.createElement("div", {
       style: {
         fontSize: 12,
-        color: "#9CA3AF",
+        color: "#4B5563",
         marginTop: 6
       }
     }, "Skipped \xB7 ", React.createElement("button", {
@@ -6203,7 +6903,7 @@ function ReviewTab({
     }, "answer now")), answered && row.attended === 0 && React.createElement("div", {
       style: {
         fontSize: 12,
-        color: "#6B7280",
+        color: "#4B5563",
         marginTop: 6
       }
     }, "Didn't do this \u2014 no rating needed. ", React.createElement("button", {
@@ -6325,7 +7025,7 @@ function ReviewTab({
       style: {
         border: "none",
         background: "none",
-        color: "#9CA3AF",
+        color: "#4B5563",
         fontSize: 11,
         fontWeight: 600,
         cursor: "pointer",
@@ -6361,7 +7061,7 @@ function ReviewTab({
   }, reviewRatingLabel(a.rating))), React.createElement("div", {
     style: {
       fontSize: 11,
-      color: "#9CA3AF",
+      color: "#4B5563",
       marginTop: 2
     }
   }, "Added by you", a.category ? " \xB7 " + ((CAT[a.category] || {}).label || a.category) : ""))), openAdd === g.day.id ? React.createElement("div", {
@@ -6498,7 +7198,7 @@ function ReviewTab({
     style: {
       border: "none",
       background: "none",
-      color: "#6B7280",
+      color: "#4B5563",
       fontSize: 12,
       fontWeight: 700,
       cursor: "pointer"
@@ -6510,7 +7210,7 @@ function ReviewTab({
       padding: "8px 18px",
       borderRadius: 10,
       background: canAdd ? "#0D2B4E" : "#E5E7EB",
-      color: canAdd ? "#fff" : "#9CA3AF",
+      color: canAdd ? "#fff" : "#9CA3AF" /* disabled look — exempt from text contrast */,
       border: "none",
       cursor: canAdd ? "pointer" : "default",
       fontWeight: 700,
@@ -6529,7 +7229,7 @@ function ReviewTab({
       border: "1px dashed #D1D5DB",
       borderRadius: 12,
       padding: "9px 0",
-      color: "#6B7280",
+      color: "#4B5563",
       fontSize: 12,
       fontWeight: 700,
       cursor: "pointer"
@@ -6623,6 +7323,7 @@ function App() {
   }
   const [authed, setAuthed] = useState(false);
   const [storageBlocked, setStorageBlocked] = useState(false);
+  const [ssoNote, setSsoNote] = useState("");
   const [portalPaused] = useState(() => {
     try {
       return localStorage.getItem("tg_signed_out") === "1";
@@ -6632,17 +7333,38 @@ function App() {
   });
   const [user, setUser] = useState(null);
   const [tab, setTab] = useState(() => {
+    let t = null;
     try {
-      const t = localStorage.getItem("tg_tab");
-      if (t && ["itinerary", "map", "decide", "bookings", "packing", "essentials", "flights", "notes", "summary"].concat(RETRO_UNLOCKED ? ["review"] : []).indexOf(t) >= 0) return t;
+      t = localStorage.getItem("tg_tab");
     } catch (e) {}
-    return "itinerary";
+    return initialTab(t, Date.now(), TAB_LIST.map(x => x.id).concat(RETRO_UNLOCKED ? ["review"] : []));
   });
   useEffect(() => {
     try {
       localStorage.setItem("tg_tab", tab);
     } catch (e) {}
   }, [tab]);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [wideScreen, setWideScreen] = useState(() => {
+    try {
+      return !!window.matchMedia(WIDE_QUERY).matches;
+    } catch (e) {
+      return false;
+    }
+  });
+  useEffect(() => {
+    let mq = null;
+    const on = () => setWideScreen(!!(mq && mq.matches));
+    try {
+      mq = window.matchMedia(WIDE_QUERY);
+      if (mq.addEventListener) mq.addEventListener("change", on);else if (mq.addListener) mq.addListener(on);
+    } catch (e) {}
+    return () => {
+      try {
+        if (mq && mq.removeEventListener) mq.removeEventListener("change", on);else if (mq && mq.removeListener) mq.removeListener(on);
+      } catch (e) {}
+    };
+  }, []);
   // Decide tab lens: 'days' keeps the per-day ranking, 'family' flattens the trip
   // into one consensus order. Session-only on purpose - it is a way of reading
   // the same data, not a per-device preference like the map's "My picks".
@@ -6782,7 +7504,13 @@ function App() {
     if (portalPaused) return;
     fetch(API + '/api/sso', {
       credentials: 'same-origin'
-    }).then(r => r && r.ok ? r.json() : null).then(d => {
+    }).then(r => r && (r.ok || r.status === 401) ? r.json().catch(() => null) : null).then(d => {
+      if (d && !d.ok) {
+        // a portal hand-off that didn't work: say why (an ordinary visitor
+        // with no portal cookie gets reason "none" and sees nothing)
+        setSsoNote(ssoNoteFor(d));
+        return;
+      }
       if (!d || !d.ok || !d.token || !d.name) return;
       try {
         localStorage.setItem("tg_name", d.name);
@@ -6884,7 +7612,11 @@ function App() {
       if (sRes.ok) setSuggestions(snap.suggestions = await sRes.json());
       if (rRes.ok) setReservations(snap.reservations = await rRes.json());
       if (pRes.ok) setPacking(snap.packing = await pRes.json());
-      if (scRes.ok) setSchedule(snap.schedule = await scRes.json());
+      if (scRes.ok) {
+        const srvPlan = await scRes.json();
+        snap.schedule = srvPlan;
+        setSchedule(prev => mergePendingPlan(srvPlan, prev, _obGet()));
+      }
       let me = null;
       try {
         me = localStorage.getItem("tg_name");
@@ -7152,11 +7884,13 @@ function App() {
         try {
           t = await r.text();
         } catch (_e) {}
+        setSchedule(prev => (prev || []).filter(x => !x.pending));
         alert("Couldn't add this to the day plan.\n\nThe server returned an error (HTTP " + r.status + ").\n" + (t ? t.slice(0, 400) : "(no details returned)"));
         return;
       }
       loadData(true);
     } catch (e) {
+      setSchedule(prev => (prev || []).filter(x => !x.pending));
       alert("Couldn't add this to the day plan: " + (e && e.message || String(e)));
     }
   };
@@ -7268,7 +8002,8 @@ function App() {
     const done = cur && cur.done ? 0 : 1;
     setPacking(prev => prev.map(p => p.id === id ? {
       ...p,
-      done
+      done,
+      doneBy: p.perPerson ? (p.doneBy || []).filter(n => n !== user).concat(done ? [user] : []) : p.doneBy
     } : p));
     try {
       await qfetch(API + '/api/packing/' + id + '/toggle', {
@@ -7313,6 +8048,7 @@ function App() {
   if (!authed) return React.createElement(Login, {
     onLogin: doLogin,
     storageBlocked,
+    notice: ssoNote,
     onPortal: portalPaused ? () => {
       try {
         localStorage.removeItem("tg_signed_out");
@@ -7387,7 +8123,10 @@ function App() {
     reservations: reservations,
     trip: TRIP.trip,
     interests: interests
-  }), printPortalRef.current), React.createElement("div", {
+  }), printPortalRef.current), React.createElement("a", {
+    href: "#main",
+    className: "skip-link"
+  }, "Skip to the trip"), React.createElement("div", {
     style: {
       background: "#0D2B4E",
       padding: "16px 16px 12px",
@@ -7426,6 +8165,15 @@ function App() {
     }
   }, React.createElement("div", {
     onClick: () => loadData(),
+    role: "button",
+    tabIndex: 0,
+    "aria-label": "Sync now",
+    onKeyDown: e => {
+      if (e && (e.key === "Enter" || e.key === " ")) {
+        e.preventDefault();
+        loadData();
+      }
+    },
     title: "Tap to sync now",
     style: {
       fontSize: 10,
@@ -7442,7 +8190,7 @@ function App() {
     }
   }, "\u26A0 offline"), !syncing && !syncError && lastSync && React.createElement("span", {
     style: {
-      color: "rgba(255,255,255,.4)"
+      color: "rgba(255,255,255,.78)"
     }
   }, "\u2713 ", lastSync)), React.createElement("button", {
     onClick: logout,
@@ -7463,7 +8211,7 @@ function App() {
     }
   }, "\uD83D\uDC64"), React.createElement("span", null, user), React.createElement("span", {
     style: {
-      opacity: .5,
+      opacity: .85,
       fontSize: 10
     }
   }, "\xB7 logout"))))), React.createElement("div", {
@@ -7474,61 +8222,20 @@ function App() {
       top: 56,
       zIndex: 20
     }
-  }, React.createElement("div", {
-    style: {
-      maxWidth: 900,
-      margin: "0 auto",
-      display: "flex",
-      padding: "0 12px",
-      overflowX: "auto",
-      scrollbarWidth: "none"
-    }
-  }, [{
-    id: "itinerary",
-    label: "🗺 Itinerary"
-  }, {
-    id: "map",
-    label: "🧭 Map"
-  }, {
-    id: "decide",
-    label: "🗳️ Decide"
-  }, {
-    id: "bookings",
-    label: "🎫 Bookings"
-  }, {
-    id: "packing",
-    label: "🧳 Packing"
-  }, {
-    id: "essentials",
-    label: "🛟 Essentials"
-  }, {
-    id: "flights",
-    label: "✈️ Flights"
-  }, {
-    id: "notes",
-    label: "📝 Notes"
-  }, {
-    id: "summary",
-    label: "⭐ Summary"
-  }].concat(RETRO_UNLOCKED ? [{
-    id: "review",
-    label: "✅ Review"
-  }] : []).map(t => React.createElement("button", {
-    key: t.id,
-    onClick: () => setTab(t.id),
-    style: {
-      flex: "0 0 auto",
-      padding: "10px 9px",
-      fontSize: 12,
-      fontWeight: 600,
-      border: "none",
-      background: "none",
-      cursor: "pointer",
-      whiteSpace: "nowrap",
-      borderBottom: tab === t.id ? "3px solid #0D2B4E" : "3px solid transparent",
-      color: tab === t.id ? "#0D2B4E" : "#6B7280"
-    }
-  }, t.label)))), React.createElement(Countdown, null), React.createElement(ShareChip, null), (() => {
+  }, React.createElement(TabBar, {
+    tabs: TAB_LIST.concat(RETRO_UNLOCKED ? [{
+      id: "review",
+      label: "\u2705 Review"
+    }] : []),
+    tab: tab,
+    onPick: id => {
+      setTab(id);
+      setMoreOpen(false);
+    },
+    wide: wideScreen,
+    moreOpen: moreOpen,
+    setMoreOpen: setMoreOpen
+  })), tab !== "now" && React.createElement(Countdown, null), React.createElement(ShareChip, null), tab !== "now" && (() => {
     try {
       const ymd = new Intl.DateTimeFormat("en-CA", {
         timeZone: DEFAULT_TZ
@@ -7627,7 +8334,21 @@ function App() {
       maxWidth: "88%",
       textAlign: "center"
     }
-  }, toast), tab === "itinerary" && React.createElement("div", {
+  }, toast), React.createElement("div", {
+    id: "main",
+    tabIndex: -1,
+    "aria-label": "Trip content"
+  }), tab === "now" && React.createElement(NowHome, {
+    schedule: schedule,
+    reservations: reservations,
+    interests: interests,
+    nowMs: nowTick,
+    onOpenDay: id => {
+      setDay(id);
+      setTab("itinerary");
+    },
+    onTab: id => setTab(id)
+  }), tab === "itinerary" && React.createElement("div", {
     style: {
       maxWidth: 640,
       margin: "0 auto",
@@ -7881,7 +8602,7 @@ function App() {
     style: {
       fontSize: 10,
       fontWeight: 700,
-      color: "rgba(255,255,255,.5)",
+      color: "rgba(255,255,255,.85)",
       marginBottom: 6,
       letterSpacing: .5
     }
@@ -7934,7 +8655,7 @@ function App() {
       left: 12,
       top: "50%",
       transform: "translateY(-50%)",
-      color: "#9CA3AF",
+      color: "#4B5563",
       fontSize: 14
     }
   }, "\uD83D\uDD0D"), React.createElement("input", {
@@ -7953,6 +8674,7 @@ function App() {
       boxShadow: "0 1px 4px rgba(0,0,0,.06)"
     }
   }), search && React.createElement("button", {
+    "aria-label": "Clear the search",
     onClick: () => setSearch(""),
     style: {
       position: "absolute",
@@ -7961,7 +8683,7 @@ function App() {
       transform: "translateY(-50%)",
       background: "none",
       border: "none",
-      color: "#9CA3AF",
+      color: "#4B5563",
       cursor: "pointer",
       fontSize: 14
     }
@@ -8036,7 +8758,7 @@ function App() {
   }, React.createElement("div", {
     style: {
       fontSize: 12,
-      color: "#6B7280",
+      color: "#4B5563",
       fontWeight: 500
     }
   }, acts.length, " ", acts.length === 1 ? "activity" : "activities", onlyMine ? ` for ${user}` : ""), React.createElement("select", {
@@ -8074,7 +8796,7 @@ function App() {
     style: {
       textAlign: "center",
       padding: "40px 20px",
-      color: "#9CA3AF"
+      color: "#4B5563"
     }
   }, React.createElement("div", {
     style: {
@@ -8236,7 +8958,7 @@ function App() {
     }, React.createElement("span", {
       style: {
         fontSize: 10,
-        color: "#9CA3AF",
+        color: "#4B5563",
         fontWeight: 600
       }
     }, "Great for:"), a.who.map(n => {
@@ -8257,7 +8979,7 @@ function App() {
         display: "flex",
         gap: 12,
         fontSize: 12,
-        color: "#6B7280",
+        color: "#4B5563",
         fontWeight: 500,
         marginBottom: 10
       }
@@ -8363,7 +9085,7 @@ function App() {
     }, React.createElement("span", {
       style: {
         fontSize: 11,
-        color: "#9CA3AF"
+        color: "#4B5563"
       }
     }, "Interested:"), React.createElement(IntChips, {
       list: interests[a.id]
@@ -8392,7 +9114,7 @@ function App() {
         style: {
           fontSize: 12,
           fontWeight: 700,
-          color: ms > 0 ? "#92400E" : "#6B7280",
+          color: ms > 0 ? "#92400E" : "#4B5563",
           flexShrink: 0
         }
       }, ms > 0 ? "Your pick" : "Interested?"), React.createElement("span", {
@@ -8404,6 +9126,8 @@ function App() {
         key: k,
         onClick: () => setStars(a.id, ms === k ? 0 : k),
         title: k + (k > 1 ? " stars" : " star"),
+        "aria-label": "Rate " + k + (k > 1 ? " stars" : " star"),
+        "aria-pressed": ms === k ? "true" : "false",
         style: {
           border: "none",
           background: "none",
@@ -8411,7 +9135,7 @@ function App() {
           padding: "2px 2px",
           fontSize: 23,
           lineHeight: 1,
-          color: k <= ms ? "#C9A227" : "#CBD5E1"
+          color: k <= ms ? "#C9A227" : "#CBD5E1" /* empty star glyph — decorative, exempt */
         }
       }, k <= ms ? "★" : "☆"))), sc > 0 ? React.createElement("span", {
         title: "Family interest score",
@@ -8431,12 +9155,14 @@ function App() {
       }));
     })(), React.createElement("button", {
       onClick: () => setExpanded(open ? null : a.id),
+      "aria-label": open ? "Hide details" : "Show details",
+      "aria-expanded": open ? "true" : "false",
       style: {
         width: 38,
         borderRadius: 12,
         border: "none",
         background: "#F3F4F6",
-        color: "#6B7280",
+        color: "#4B5563",
         cursor: "pointer",
         fontWeight: 800,
         fontSize: 13
@@ -8511,7 +9237,7 @@ function App() {
   }, "\uD83D\uDD17 Family Finds \u2014 ", currentDay?.label), React.createElement("div", {
     style: {
       fontSize: 12,
-      color: "#6B7280",
+      color: "#4B5563",
       marginBottom: 12
     }
   }, "Found a tour, restaurant, or idea for this day? Paste the link so everyone can see it."), daySug.length > 0 && React.createElement("div", {
@@ -8579,7 +9305,7 @@ function App() {
       style: {
         background: "none",
         border: "1px solid #E5E7EB",
-        color: "#6B7280",
+        color: "#4B5563",
         cursor: "pointer",
         fontSize: 10.5,
         fontWeight: 700,
@@ -8587,13 +9313,14 @@ function App() {
         padding: "3px 8px"
       }
     }, "Keep")) : React.createElement("button", {
+      "aria-label": "Remove this suggestion",
       onClick: () => setConfirmSug(s.id),
       title: "Remove",
       style: {
         background: "none",
         border: "none",
         cursor: "pointer",
-        color: "#D1D5DB",
+        color: "#4B5563",
         fontSize: 14,
         padding: 0
       }
@@ -8660,7 +9387,7 @@ function App() {
       padding: "9px 16px",
       borderRadius: 10,
       background: sugUrl.trim() ? "#0D2B4E" : "#E5E7EB",
-      color: sugUrl.trim() ? "#fff" : "#9CA3AF",
+      color: sugUrl.trim() ? "#fff" : "#9CA3AF" /* disabled look — exempt from text contrast */,
       border: "none",
       cursor: sugUrl.trim() ? "pointer" : "default",
       fontWeight: 700,
@@ -8726,7 +9453,7 @@ function App() {
     }, "Decide Together"), React.createElement("div", {
       style: {
         fontSize: 13,
-        color: "#6B7280",
+        color: "#4B5563",
         margin: "3px 0 14px",
         lineHeight: 1.4
       }
@@ -8775,7 +9502,7 @@ function App() {
     }, "\u2728 Picked for you, ", user), React.createElement("div", {
       style: {
         fontSize: 12,
-        color: "#6B7280",
+        color: "#4B5563",
         marginBottom: 6,
         lineHeight: 1.4
       }
@@ -8789,6 +9516,7 @@ function App() {
         borderTop: "1px solid #F3F4F6"
       }
     }, React.createElement("button", {
+      "aria-label": "Add to your picks",
       onClick: () => setStars(s.a.id, 2),
       title: "Add to your picks",
       style: {
@@ -8829,13 +9557,13 @@ function App() {
     }, s.a.name), React.createElement("div", {
       style: {
         fontSize: 11,
-        color: "#9CA3AF",
+        color: "#4B5563",
         marginTop: 2
       }
     }, catEmoji(s.a.cat), " ", s.day.label, " \xB7 ", s.day.location))))), groups.length === 0 ? React.createElement("div", {
       style: {
         textAlign: "center",
-        color: "#9CA3AF",
+        color: "#4B5563",
         fontSize: 14,
         padding: "40px 20px",
         lineHeight: 1.5
@@ -8854,15 +9582,50 @@ function App() {
       }
     }, g.family ? React.createElement(React.Fragment, null, "\u2B50 Family favorites ", React.createElement("span", {
       style: {
-        color: "#9CA3AF",
+        color: "#4B5563",
         fontWeight: 600
       }
     }, "\xB7 ", g.items.length, " tagged across the trip")) : React.createElement(React.Fragment, null, g.day.emoji, " ", g.day.location, " ", React.createElement("span", {
       style: {
-        color: "#9CA3AF",
+        color: "#4B5563",
         fontWeight: 600
       }
-    }, "\xB7 ", g.day.label))), g.items.map((x, i) => {
+    }, "\xB7 ", g.day.label))), !g.family && PLANNERS.includes(user) && (() => {
+      const fav = favoriteToAdd(g.day, interests, schedule);
+      if (!fav) return null;
+      return React.createElement("button", {
+        onClick: () => {
+          const b = favoritePlanBody(g.day, fav.a);
+          if (!window.confirm("Put \u201C" + fav.a.name + "\u201D on " + g.day.label + "'s plan for everyone" + (b.time ? " at " + fmt12(b.time) : "") + "? (It also shows under Bookings.)")) return;
+          // on the plan right away (the next load replaces this with the real
+          // row), so a second tap can't add the same favorite twice
+          setSchedule(prev => (prev || []).concat([{
+            id: "pending-" + Date.now(),
+            day_id: b.dayId,
+            activity_id: b.activityId,
+            title: b.title,
+            time_text: b.time,
+            who: JSON.stringify(b.who),
+            pending: true
+          }]));
+          addSchedule(b);
+        },
+        style: {
+          display: "block",
+          width: "100%",
+          textAlign: "left",
+          margin: "0 0 8px",
+          padding: "10px 13px",
+          borderRadius: 12,
+          border: "1px dashed #0F766E",
+          background: "#F0FDF4",
+          color: "#0F5F59",
+          fontSize: 14,
+          fontWeight: 700,
+          cursor: "pointer"
+        }
+      }, "\uD83D\uDCCC Put the favorite on ", g.day.label, "'s plan: ", fav.a.name);
+    })(), g.items.map((x, i) => {
       const top = i === 0 && x.names.length > 1;
       return React.createElement("button", {
         key: x.a.id,
@@ -8904,7 +9667,7 @@ function App() {
         }
       }, "\u2B50"), x.a.name, g.family && React.createElement("span", {
         style: {
-          color: "#9CA3AF",
+          color: "#4B5563",
           fontWeight: 600,
           fontSize: 12
         }
@@ -8989,7 +9752,7 @@ function App() {
   }, "Reservations"), React.createElement("div", {
     style: {
       fontSize: 13,
-      color: "#6B7280",
+      color: "#4B5563",
       margin: "3px 0 14px",
       lineHeight: 1.4
     }
@@ -9056,7 +9819,7 @@ function App() {
       ...inputStyle,
       flex: 1,
       background: "#fff",
-      color: resForm.date ? "#1F2937" : "#9CA3AF"
+      color: resForm.date ? "#1F2937" : "#4B5563"
     }
   }, React.createElement("option", {
     value: ""
@@ -9075,7 +9838,7 @@ function App() {
       ...inputStyle,
       flex: 1,
       background: "#fff",
-      color: resForm.time ? "#1F2937" : "#9CA3AF"
+      color: resForm.time ? "#1F2937" : "#4B5563"
     }
   }, React.createElement("option", {
     value: ""
@@ -9117,7 +9880,7 @@ function App() {
     style: {
       fontSize: 12,
       fontWeight: 700,
-      color: "#6B7280",
+      color: "#4B5563",
       margin: "0 2px 8px"
     }
   }, "Suggested \u2014 tap to add the trip's known reservations, then fill in each confirmation #:"), React.createElement("div", {
@@ -9142,7 +9905,7 @@ function App() {
   }, "+ ", sd.title, sd.date ? " · " + sd.date : "")))), reservations.length === 0 ? React.createElement("div", {
     style: {
       textAlign: "center",
-      color: "#9CA3AF",
+      color: "#4B5563",
       fontSize: 14,
       padding: "30px 20px",
       lineHeight: 1.5
@@ -9177,7 +9940,7 @@ function App() {
         flexShrink: 0,
         fontSize: 10.5,
         fontWeight: 700,
-        color: "#9CA3AF",
+        color: "#4B5563",
         border: "1px solid #E5E7EB",
         borderRadius: 8,
         padding: "3px 8px"
@@ -9224,11 +9987,12 @@ function App() {
         padding: "3px 10px"
       }
     }, "Keep")) : React.createElement("button", {
+      "aria-label": "Delete this booking",
       onClick: () => setConfirmRes(r.id),
       style: {
         background: "none",
         border: "none",
-        color: "#CBD5E1",
+        color: "#475569",
         cursor: "pointer",
         fontSize: 18,
         lineHeight: 1,
@@ -9238,7 +10002,7 @@ function App() {
   })()), r.when_text && React.createElement("div", {
     style: {
       fontSize: 12.5,
-      color: "#6B7280",
+      color: "#4B5563",
       marginTop: 3
     }
   }, "\uD83D\uDDD3 ", (() => {
@@ -9253,7 +10017,7 @@ function App() {
     return React.createElement("div", {
       style: {
         fontSize: 12,
-        color: "#9CA3AF",
+        color: "#4B5563",
         marginTop: 4
       }
     }, "\u2795 added by ", React.createElement("span", {
@@ -9277,7 +10041,7 @@ function App() {
     }, React.createElement("span", {
       style: {
         fontSize: 10.5,
-        color: "#9CA3AF"
+        color: "#4B5563"
       }
     }, "Interested:"), React.createElement(IntChips, {
       list: nm,
@@ -9338,7 +10102,7 @@ function App() {
         marginTop: 5,
         background: "#F3F4F6",
         border: "1px solid #E5E7EB",
-        color: "#6B7280",
+        color: "#4B5563",
         fontWeight: 700,
         fontSize: 11.5,
         padding: "3px 9px",
@@ -9371,14 +10135,14 @@ function App() {
     return React.createElement("div", {
       style: {
         fontSize: 12.5,
-        color: "#6B7280",
+        color: "#4B5563",
         marginTop: 3
       }
     }, "\uD83D\uDC64 ", w);
   })(), r.notes && React.createElement("div", {
     style: {
       fontSize: 12.5,
-      color: "#6B7280",
+      color: "#4B5563",
       marginTop: 3
     }
   }, "\uD83D\uDCDD ", r.notes), React.createElement("button", {
@@ -9411,11 +10175,11 @@ function App() {
   }, "Packing List"), React.createElement("div", {
     style: {
       fontSize: 13,
-      color: "#6B7280",
+      color: "#4B5563",
       margin: "3px 0 12px",
       lineHeight: 1.4
     }
-  }, "A shared checklist \u2014 tap an item to check it off as it's packed. ", packing.length > 0 && React.createElement("span", {
+  }, "Tap an item when it's in your bag. Most items are checked off by each person; an item for one traveler or for the whole group (Everyone) has one shared check. ", packing.length > 0 && React.createElement("span", {
     style: {
       fontWeight: 700,
       color: "#0D2B4E"
@@ -9453,7 +10217,7 @@ function App() {
     style: {
       fontSize: 11,
       fontWeight: 800,
-      color: "#9CA3AF",
+      color: "#4B5563",
       letterSpacing: .5,
       marginBottom: 6
     }
@@ -9479,7 +10243,7 @@ function App() {
   }, tp.emoji, " ", tp.label, " (", tp.items.length, ")")))), packing.length === 0 ? React.createElement("div", {
     style: {
       textAlign: "center",
-      color: "#9CA3AF",
+      color: "#4B5563",
       fontSize: 14,
       padding: "30px 20px",
       lineHeight: 1.5
@@ -9546,20 +10310,20 @@ function App() {
       }, packGroupLabel(w)), meta && React.createElement("span", {
         style: {
           fontSize: 11,
-          color: "#94A3B8",
+          color: "#475569",
           marginLeft: 7
         }
       }, meta.sub)), React.createElement("span", {
         style: {
           fontSize: 11.5,
           fontWeight: 800,
-          color: allDone ? "#16A34A" : "#64748B",
+          color: allDone ? "#15803D" : "#475569",
           whiteSpace: "nowrap"
         }
       }, allDone ? "✓ all packed" : doneN + " / " + items.length), React.createElement("span", {
         style: {
           fontSize: 12,
-          color: "#94A3B8",
+          color: "#475569",
           width: 14,
           textAlign: "center"
         }
@@ -9576,59 +10340,17 @@ function App() {
         style: {
           fontSize: 10.5,
           fontWeight: 800,
-          color: "#94A3B8",
+          color: "#475569",
           letterSpacing: .4,
           textTransform: "uppercase",
           margin: "2px 4px 5px"
         }
-      }, c), cats[c].map(p => React.createElement("div", {
+      }, c), cats[c].map(p => React.createElement(PackRow, {
         key: p.id,
-        onClick: () => togglePacking(p.id),
-        style: {
-          display: "flex",
-          alignItems: "center",
-          gap: 11,
-          padding: "8px 6px",
-          cursor: "pointer",
-          borderRadius: 9
-        }
-      }, React.createElement("span", {
-        style: {
-          width: 21,
-          height: 21,
-          borderRadius: 6,
-          border: p.done ? "none" : "2px solid #CBD5E1",
-          background: p.done ? "#16A34A" : "#fff",
-          color: "#fff",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          fontSize: 13,
-          flexShrink: 0
-        }
-      }, p.done ? "✓" : ""), React.createElement("span", {
-        style: {
-          flex: 1,
-          fontSize: 13.5,
-          color: p.done ? "#9CA3AF" : "#1F2937",
-          textDecoration: p.done ? "line-through" : "none",
-          lineHeight: 1.35
-        }
-      }, p.item), React.createElement("button", {
-        onClick: e => {
-          e.stopPropagation();
-          deletePacking(p.id);
-        },
-        style: {
-          background: "none",
-          border: "none",
-          color: "#E2E8F0",
-          cursor: "pointer",
-          fontSize: 17,
-          lineHeight: 1,
-          padding: "0 2px"
-        }
-      }, "\xD7")))))));
+        p: p,
+        onToggle: togglePacking,
+        onDelete: deletePacking
+      }))))));
     });
   })(), packing.length > 0 && React.createElement("div", {
     style: {
@@ -9694,7 +10416,7 @@ function App() {
     style: {
       textAlign: "center",
       fontSize: 11,
-      color: "#9CA3AF",
+      color: "#4B5563",
       marginTop: 10
     }
   }, "Tap a status to share it with the family \xB7 the time shown is when it was last checked")), tab === "essentials" && React.createElement("div", {
@@ -9714,7 +10436,7 @@ function App() {
   }, IS_CRUISE ? "Port Essentials" : "Essentials"), React.createElement("div", {
     style: {
       fontSize: 13,
-      color: "#6B7280",
+      color: "#4B5563",
       margin: "3px 0 14px",
       lineHeight: 1.4
     }
@@ -9737,12 +10459,12 @@ function App() {
     style: {
       fontSize: 12,
       fontWeight: 600,
-      color: "#9CA3AF"
+      color: "#4B5563"
     }
   }, " \xB7 ", c.portNote) : null), c.ports ? React.createElement("div", {
     style: {
       fontSize: 12,
-      color: "#9CA3AF",
+      color: "#4B5563",
       marginBottom: 11
     }
   }, c.ports) : null, c.alert ? React.createElement("div", {
@@ -9779,7 +10501,7 @@ function App() {
   }, "\uD83C\uDD98 U.S. Embassies & Consulates"), React.createElement("div", {
     style: {
       fontSize: 12,
-      color: "#9CA3AF",
+      color: "#4B5563",
       marginBottom: 11
     }
   }, "For a lost or stolen passport, or any emergency involving a U.S. citizen. For police, ambulance, or fire, look up your destination's local emergency number before you travel."), React.createElement("div", {
@@ -9821,7 +10543,7 @@ function App() {
   }, em.flag, " ", em.name), React.createElement("div", {
     style: {
       fontSize: 12,
-      color: "#6B7280",
+      color: "#4B5563",
       margin: "2px 0 7px"
     }
   }, em.covers), em.addr && React.createElement("div", {
@@ -9887,7 +10609,7 @@ function App() {
   }, "\uD83C\uDF10 Site")), em.note && React.createElement("div", {
     style: {
       fontSize: 11,
-      color: "#9CA3AF",
+      color: "#4B5563",
       marginTop: 6,
       lineHeight: 1.4
     }
@@ -9922,7 +10644,7 @@ function App() {
     style: {
       display: "block",
       fontSize: 12,
-      color: "#6B7280",
+      color: "#4B5563",
       marginTop: 2
     }
   }, "Everyone drops pics in the family Google album.")), React.createElement("span", {
@@ -9979,7 +10701,7 @@ function App() {
       padding: "9px 20px",
       borderRadius: 10,
       background: noteText.trim() ? "#0D2B4E" : "#E5E7EB",
-      color: noteText.trim() ? "#fff" : "#9CA3AF",
+      color: noteText.trim() ? "#fff" : "#9CA3AF" /* disabled look — exempt from text contrast */,
       border: "none",
       cursor: noteText.trim() ? "pointer" : "default",
       fontWeight: 700,
@@ -9996,7 +10718,7 @@ function App() {
   }, React.createElement("span", {
     style: {
       fontSize: 12,
-      color: "#6B7280",
+      color: "#4B5563",
       fontWeight: 600
     }
   }, notes.length >= 50 ? "Latest 50 notes" : notes.length + " " + (notes.length === 1 ? "note" : "notes")), React.createElement("button", {
@@ -10007,14 +10729,14 @@ function App() {
       border: "none",
       background: "none",
       cursor: "pointer",
-      color: onlyMine ? "#0D2B4E" : "#9CA3AF"
+      color: onlyMine ? "#0D2B4E" : "#4B5563"
     }
   }, onlyMine ? "● Showing mine" : "○ Only mine")), (() => {
     const list = onlyMine ? notes.filter(n => n.author === user) : notes;
     if (list.length === 0) return React.createElement("div", {
       style: {
         textAlign: "center",
-        color: "#9CA3AF",
+        color: "#4B5563",
         fontSize: 13,
         padding: "30px 0"
       }
@@ -10055,15 +10777,16 @@ function App() {
       }, React.createElement("span", {
         style: {
           fontSize: 10,
-          color: "#C1C7D0"
+          color: "#4B5563"
         }
       }, fmtNote(n.created_at)), n.author === user && React.createElement("button", {
+        "aria-label": "Delete this note",
         onClick: () => deleteNote(n.id),
         style: {
           background: "none",
           border: "none",
           cursor: "pointer",
-          color: "#D1D5DB",
+          color: "#4B5563",
           fontSize: 14,
           padding: 0
         }
@@ -10205,7 +10928,7 @@ function App() {
     }, "\uD83D\uDCC5 On the plan \u2014 " + dayLabelIn(DAYS, s.day_id)), React.createElement("div", {
       style: {
         fontSize: 10,
-        color: "#9CA3AF",
+        color: "#4B5563",
         fontWeight: 600
       }
     }, (() => {
@@ -10301,12 +11024,12 @@ function App() {
     }, "Your Trip Personality"), React.createElement("div", {
       style: {
         fontSize: 11,
-        color: "#9CA3AF"
+        color: "#4B5563"
       }
     }, totalHearts, " picks so far")), React.createElement("div", {
       style: {
         fontSize: 12,
-        color: "#6B7280",
+        color: "#4B5563",
         marginBottom: 12,
         lineHeight: 1.4
       }
@@ -10329,7 +11052,7 @@ function App() {
       }
     }, catEmoji(r.c), " ", r.label), React.createElement("span", {
       style: {
-        color: "#6B7280",
+        color: "#4B5563",
         fontWeight: 700
       }
     }, r.pct, "%")), React.createElement("div", {
@@ -10410,14 +11133,14 @@ function App() {
           borderRadius: 20,
           border: active ? "2px solid #0D2B4E" : "2px solid #E5E7EB",
           background: active ? bg : "#fff",
-          color: active ? tc : "#6B7280",
+          color: active ? tc : "#4B5563",
           fontWeight: 700,
           fontSize: 13,
           cursor: "pointer"
         }
       }, p, " ", React.createElement("span", {
         style: {
-          opacity: .7,
+          opacity: .9,
           fontSize: 11
         }
       }, "(", c, ")"));
@@ -10447,14 +11170,14 @@ function App() {
     }, "\uD83D\uDC40 Show unplanned " + (sumUnplanned ? "on" : "off")), sumUnplanned && React.createElement("span", {
       style: {
         fontSize: 11,
-        color: "#9CA3AF",
+        color: "#4B5563",
         fontWeight: 600,
         lineHeight: 1.3
       }
     }, "Faded cards have no votes yet \u00B7 the name counts above stay tagged-only")), groups.length === 0 && !sumUnplanned ? React.createElement("div", {
       style: {
         textAlign: "center",
-        color: "#9CA3AF",
+        color: "#4B5563",
         fontSize: 14,
         padding: "40px 20px",
         lineHeight: 1.5
@@ -10462,7 +11185,7 @@ function App() {
     }, sumPerson === "All" ? "Nothing tagged yet. Open the Itinerary and tap “Interested?” on the things you'd like to do — they'll all gather here." : sumPerson + " hasn't tagged anything yet. Open the Itinerary and tap “Interested?”") : React.createElement(React.Fragment, null, React.createElement("div", {
       style: {
         fontSize: 12,
-        color: "#6B7280",
+        color: "#4B5563",
         fontWeight: 600,
         marginBottom: 10,
         padding: "0 4px"
@@ -10501,7 +11224,7 @@ function App() {
     }, g.day.label), React.createElement("span", {
       style: {
         fontSize: 12,
-        color: "#9CA3AF"
+        color: "#4B5563"
       }
     }, "\xB7 ", g.day.location)), g.items.map(it => {
       if (it.plan) return planCard(it.plan, g.day);
@@ -10557,7 +11280,7 @@ function App() {
       }, catEmoji(a.cat), " ", CAT[a.cat]?.label || a.cat), React.createElement("span", {
         style: {
           fontSize: 11,
-          color: "#9CA3AF"
+          color: "#4B5563"
         }
       }, a.cost)), React.createElement("div", {
         style: {
@@ -10585,14 +11308,14 @@ function App() {
       }, dim ? React.createElement("span", {
         style: {
           fontSize: 10,
-          color: "#9CA3AF",
+          color: "#4B5563",
           fontWeight: 600,
           fontStyle: "italic"
         }
       }, "No votes yet \u2014 tap to open it in the Itinerary") : React.createElement(React.Fragment, null, React.createElement("span", {
         style: {
           fontSize: 10,
-          color: "#9CA3AF",
+          color: "#4B5563",
           fontWeight: 600
         }
       }, "Interested:"), React.createElement(IntChips, {
@@ -10664,20 +11387,20 @@ function FlightCard({
   }, f.route), React.createElement("span", {
     style: {
       fontSize: 12,
-      color: "#6B7280",
+      color: "#4B5563",
       fontWeight: 600
     }
   }, f.flight)), React.createElement("div", {
     style: {
       fontSize: 11,
-      color: "#9CA3AF",
+      color: "#4B5563",
       marginBottom: 6
     }
   }, f.date, f.note ? " · " + f.note : ""), f.homeNote && React.createElement("div", {
     style: {
       display: "inline-block",
       fontSize: 11,
-      color: "#6B7280",
+      color: "#4B5563",
       background: "#F8FAFC",
       border: "1px solid #EEF1F4",
       borderRadius: 8,
@@ -10700,7 +11423,7 @@ function FlightCard({
   }, f.dep), React.createElement("div", {
     style: {
       fontSize: 10,
-      color: "#9CA3AF"
+      color: "#4B5563"
     }
   }, "Depart")), React.createElement("div", {
     style: {
@@ -10730,7 +11453,7 @@ function FlightCard({
   }, f.arr), React.createElement("div", {
     style: {
       fontSize: 10,
-      color: "#9CA3AF"
+      color: "#4B5563"
     }
   }, "Arrive"))), React.createElement("div", {
     style: {
@@ -10742,7 +11465,7 @@ function FlightCard({
     }
   }, React.createElement("div", null, React.createElement("span", {
     style: {
-      color: "#9CA3AF"
+      color: "#4B5563"
     }
   }, "Aircraft "), React.createElement("span", {
     style: {
@@ -10751,7 +11474,7 @@ function FlightCard({
     }
   }, f.aircraft)), React.createElement("div", null, React.createElement("span", {
     style: {
-      color: "#9CA3AF"
+      color: "#4B5563"
     }
   }, "Cabin "), React.createElement("span", {
     style: {
@@ -10760,7 +11483,7 @@ function FlightCard({
     }
   }, f.cabin)), React.createElement("div", null, React.createElement("span", {
     style: {
-      color: "#9CA3AF"
+      color: "#4B5563"
     }
   }, "Seats "), React.createElement("span", {
     style: {
@@ -10769,7 +11492,7 @@ function FlightCard({
     }
   }, f.seats)), React.createElement("div", null, React.createElement("span", {
     style: {
-      color: "#9CA3AF"
+      color: "#4B5563"
     }
   }, "Terminal "), React.createElement("span", {
     style: {
@@ -10794,7 +11517,7 @@ function FlightCard({
   }, "\u2708 Track ", f.flight, " on FlightAware \u2197"), React.createElement("div", {
     style: {
       fontSize: 11,
-      color: "#9CA3AF",
+      color: "#4B5563",
       fontWeight: 600,
       marginBottom: 6
     }
@@ -10815,7 +11538,7 @@ function FlightCard({
         borderRadius: 10,
         border: on ? "1px solid " + bd : "1px solid #E5E7EB",
         background: on ? bg : "#fff",
-        color: on ? col : "#9CA3AF",
+        color: on ? col : "#4B5563",
         fontWeight: 700,
         fontSize: 12,
         cursor: "pointer"

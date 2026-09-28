@@ -238,6 +238,15 @@ curl -s -H "Cookie: fam_sso=$MC" "localhost:$PORT_P/api/portal/me" | grep -q '"n
 ck $? "…and that cookie is genuinely valid at the portal"
 [ "$(code -H "Cookie: fam_sso=$MC" "localhost:$PORT_A/api/sso")" = 401 ]
 ck $? "valid cookie, name not in the trip's family[] → 401 (not on this trip)"
+# v0.25.0: each "no" says why, so the sign-in screen can explain it — but an
+# ordinary visitor (no cookie) is told nothing beyond "none".
+curl -s "localhost:$PORT_A/api/sso" | grep -q '"reason":"none"'
+ck $? "no cookie → reason \"none\" (the page shows nothing)"
+curl -s -H "Cookie: fam_sso=$BAD" "localhost:$PORT_A/api/sso" | grep -q '"reason":"expired"' \
+  && curl -s -H "Cookie: fam_sso=$EXPIRED" "localhost:$PORT_A/api/sso" | grep -q '"reason":"expired"'
+ck $? "tampered or expired cookie → reason \"expired\" (sign in on the portal again)"
+curl -s -H "Cookie: fam_sso=$MC" "localhost:$PORT_A/api/sso" | grep -q '"reason":"not-on-trip","name":"Morgan"'
+ck $? "valid cookie, not on this trip → reason \"not-on-trip\" with the caller's own portal name"
 [ "$(count users)" = "$U0" ] && [ "$(count user_tokens)" = "$T1" ]
 ck $? "…and none of the four rejections wrote a row"
 

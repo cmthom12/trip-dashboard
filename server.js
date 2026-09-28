@@ -334,7 +334,7 @@ app.get('/api/admin/overview', (req, res) => {
   }));
   const rows = {};
   ['users', 'user_tokens', 'interests', 'flight_status', 'notes', 'suggestions',
-   'reservations', 'packing', 'day_schedule', 'processed_ops', 'trip_config'].forEach(t => {
+   'reservations', 'packing', 'packing_checks', 'day_schedule', 'processed_ops', 'trip_config'].forEach(t => {
     // day_schedule: the hub shows this as "day-plan rows" — count only the visible
     // plan, not tombstones a move left behind (moved_to set). COALESCE-free because
     // pre-move databases simply have no moved_to values; the ALTER runs before listen.
@@ -559,9 +559,16 @@ const _ssoVerify = value => {
 
 app.get('/api/sso', (req, res) => {
   if (!SSO_SECRET) return res.status(404).json({ error: 'Not found' });
-  const name = _ssoVerify(_ssoCookie(req.headers.cookie, 'fam_sso'));
-  if (!name) return res.status(401).json({ error: 'No portal session' });
-  if (!allowedNames().includes(name)) return res.status(401).json({ error: 'Not on this trip' });
+  // v0.25.0: say WHY, so the sign-in screen can explain a portal hand-off that
+  // didn't work instead of silently showing the PIN screen. `reason`: none =
+  // no portal cookie (an ordinary visitor — the page says nothing), expired =
+  // a cookie that no longer checks out, not-on-trip = signed in to the portal
+  // as someone this trip doesn't list (the name is the caller's own cookie).
+  const raw = _ssoCookie(req.headers.cookie, 'fam_sso');
+  if (!raw) return res.status(401).json({ error: 'No portal session', reason: 'none' });
+  const name = _ssoVerify(raw);
+  if (!name) return res.status(401).json({ error: 'No portal session', reason: 'expired' });
+  if (!allowedNames().includes(name)) return res.status(401).json({ error: 'Not on this trip', reason: 'not-on-trip', name });
   const token = crypto.randomBytes(16).toString('hex');
   db.prepare('INSERT OR IGNORE INTO user_tokens (token, name) VALUES (?, ?)').run(token, name);
   res.json({ ok: true, token, name });
@@ -712,8 +719,48 @@ app.delete('/api/reservations/:id', (req, res) => {
 });
 
 // ── PACKING LIST ──────────────────────────────────────
+// ── PACKING checks (v0.25.0): items with no owner (the quick-start items)
+// and "Day Bag" items are packed by EACH person, so each person's check is
+// their own row in packing_checks and five people ticking "passports" no
+// longer flip the same box. Everything else — an item for one traveler, or
+// shared by the group ("Everyone") — keeps ONE check (packing.done). ──
+db.exec(`CREATE TABLE IF NOT EXISTS packing_checks (
+  item_id INTEGER NOT NULL, name TEXT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (item_id, name)
+)`);
+// Decided by the owner field alone (not the current roster), so renaming or
+// adding a traveler never flips an item between shared and per-person.
+const packPerPerson = who => who == null || String(who).trim() === '' || who === 'Day Bag';
+// One-time move of old checks: a per-person item that was ticked under the
+// old shared box stays ticked — for every traveler (we can't know who ticked
+// it); anyone can untick their own.
+try {
+  if (getSetting('packing_checks_v1', '0') !== '1') {
+    db.transaction(() => {
+      const fam = allowedNames();
+      const ins = db.prepare('INSERT OR IGNORE INTO packing_checks (item_id, name) VALUES (?, ?)');
+      const clr = db.prepare('UPDATE packing SET done = 0 WHERE id = ?');
+      db.prepare('SELECT id, who FROM packing WHERE done = 1').all().forEach(r => {
+        if (!packPerPerson(r.who)) return;
+        fam.forEach(n => ins.run(r.id, n));
+        clr.run(r.id);
+      });
+      setSetting('packing_checks_v1', '1');
+    })();
+  }
+} catch (e) { console.error('packing_checks migration failed:', e.message); }
 app.get('/api/packing', requireReader, (req, res) => {
-  res.json(db.prepare('SELECT * FROM packing ORDER BY created_at ASC').all()); 
+  const checks = {};
+  db.prepare('SELECT item_id, name FROM packing_checks ORDER BY name').all()
+    .forEach(c => { (checks[c.item_id] = checks[c.item_id] || []).push(c.name); });
+  const me = req.readerName;
+  // `done` stays the reader's own state, so a v0.24 client still shows the
+  // right box; `doneBy` lists who has packed a per-person item.
+  res.json(db.prepare('SELECT * FROM packing ORDER BY created_at ASC').all().map(r => {
+    if (!packPerPerson(r.who)) return Object.assign(r, { perPerson: false });
+    const by = checks[r.id] || [];
+    return Object.assign(r, { perPerson: true, doneBy: by, done: by.includes(me) ? 1 : 0 });
+  }));
 });
 app.post('/api/packing', (req, res) => {
   const { item, category, who } = req.body;
@@ -723,8 +770,19 @@ app.post('/api/packing', (req, res) => {
   res.json({ ok: true, id: r.lastInsertRowid });
 });
 app.post('/api/packing/:id/toggle', (req, res) => {
-  const row = db.prepare('SELECT done FROM packing WHERE id = ?').get(req.params.id);
+  const id = Number(req.params.id);
+  const row = db.prepare('SELECT done, who FROM packing WHERE id = ?').get(id);
   if (!row) return res.status(404).json({ error: 'Not found' });
+  const asked = req.body && (req.body.done === 0 || req.body.done === 1 || typeof req.body.done === 'boolean') ? (req.body.done ? 1 : 0) : null;
+  if (packPerPerson(row.who)) {
+    // the caller's own check; no body (an older client) flips it
+    const me = req.authUser;
+    const has = !!db.prepare('SELECT 1 FROM packing_checks WHERE item_id = ? AND name = ?').get(id, me);
+    const on = asked === null ? !has : asked === 1;
+    if (on) db.prepare('INSERT OR IGNORE INTO packing_checks (item_id, name) VALUES (?, ?)').run(id, me);
+    else db.prepare('DELETE FROM packing_checks WHERE item_id = ? AND name = ?').run(id, me);
+    return res.json({ ok: true, done: on ? 1 : 0, perPerson: true });
+  }
   // v0.24.0 clients send the state they want ({done: 0|1}), so a replayed
   // write can't flip it back; an older client (or queued write) sends nothing
   // and gets the classic flip.
@@ -733,7 +791,11 @@ app.post('/api/packing/:id/toggle', (req, res) => {
   res.json({ ok: true });
 });
 app.delete('/api/packing/:id', (req, res) => {
-  db.prepare('DELETE FROM packing WHERE id = ?').run(req.params.id); res.json({ ok: true }); 
+  db.transaction(() => {
+    db.prepare('DELETE FROM packing_checks WHERE item_id = ?').run(Number(req.params.id));
+    db.prepare('DELETE FROM packing WHERE id = ?').run(req.params.id);
+  })();
+  res.json({ ok: true }); 
 });
 
 // ── DAY SCHEDULE (planned itinerary; only the planners can edit) ─────────────

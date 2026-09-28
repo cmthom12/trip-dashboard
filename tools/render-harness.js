@@ -80,7 +80,10 @@ const CAPTURE = ['TRIP', 'DAYS', 'FAMILY', 'CAT', 'PLANNERS',
   'safeHttpUrl', 'extLink', 'flushOutbox', 'OUTBOX_KEY',
   'safeColor', 'mapEsc', 'linkify', 'obRestampToken', 'qfetch', 'TRIP_IS_SHELL', 'authGet',
   'readDataCache', 'saveDataCache', 'clearDataCache',
-  'TEMP_UNIT', 'fmtChecked', 'daysFromToday', 'DEFAULT_TZ'];
+  'TEMP_UNIT', 'fmtChecked', 'daysFromToday', 'DEFAULT_TZ',
+  'TabBar', 'TAB_LIST', 'PRIMARY_TABS',
+  'NowHome', 'tripPhase', 'todayDay', 'initialTab', 'directionsUrl', 'fmt12', 'RETRO_UNLOCKED',
+  'favoriteToAdd', 'favoritePlanBody', 'PackRow', 'PACK_PERSON_ORDER', 'ssoNoteFor', 'Countdown', 'mergePendingPlan', 'DayPlanCard'];
 
 function block(tag, id) {
   const open = '<script type="' + tag + '" id="' + id + '">';
