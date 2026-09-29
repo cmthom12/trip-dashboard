@@ -215,6 +215,12 @@ function validateTripData(d) {
       if (!dc) { err(id + ' has no dayCoords entry — no weekday label, no weather chip, and "show on map" won\'t exist for that day'); continue; }
       if (!isLL(dc.ll)) err('dayCoords.' + id + '.ll must be [lat, lng] numbers');
       if (!ISO.test(String(dc.date || ''))) err('dayCoords.' + id + '.date must be "YYYY-MM-DD" — weekday labels and calendar export need it');
+      if (dc.tz !== undefined) {
+        // v0.25.2: optional per-day time zone (IANA name) for trips that cross zones
+        let tzOk = typeof dc.tz === 'string' && !!dc.tz;
+        if (tzOk) { try { new Intl.DateTimeFormat('en-US', { timeZone: dc.tz }); } catch (e) { tzOk = false; } }
+        if (!tzOk) warn('dayCoords.' + id + '.tz ' + JSON.stringify(dc.tz) + ' is not a time zone name like "Europe/Rome" — the app ignores it and uses the trip\'s "tz" for that day');
+      }
     }
     for (const id of Object.keys(d.dayCoords)) if (!dayIds.includes(id)) warn('dayCoords has entry "' + id + '" that matches no day id');
     if (!errors) ok('every day has a dayCoords entry');

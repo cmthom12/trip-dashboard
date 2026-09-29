@@ -147,6 +147,8 @@ trip: { "title", "brand" (short all-caps crew name), "subtitle", "ship" (cruise 
         "theme": {"navy":"#0D2B4E","gold":"#C9A227","emerald":"#10B981"} }
 family: [ { "name", "color": ["#hexBackground","#hexText"], "interests": ["food & wine", ...],
             "dietary": [ {"tag","level":"avoids"|"limits","note"} ] (OPTIONAL - see below) } ]
+planners: ["Name", ...] (OPTIONAL - who may edit the Day Plan; names exactly as in family.
+            Leave it out and every traveler can. Example: ["Alex","Sam"])
 categories: { "<key>": {"label","emoji","tw":"bg-<color>-100 text-<color>-800 border-<color>-200"} }
    (good starter keys: travel, culture, food, water, adventure, beach, shopping, relax)
 days: [ { "id":"day1","label":"Day 1","location","emoji","arrival","departure"(or null),
@@ -165,6 +167,9 @@ MUSTDO:   { "id":"md_...","name","cat"(a categories key),"desc",
             "ll":[lat,lng](optional, but include it — it puts the landmark on the map),
             "link":""(optional),"note":"one practical line"(optional) }
 dayCoords: { "day1": {"ll":[lat,lng],"zoom":11,"name","date":"YYYY-MM-DD"}, ... } (one per day id)
+  Optional per day: "tz":"Europe/Rome" — only for a trip that changes time zones. That day's
+  "today", its clock on the Now screen and its calendar times use it; days without one use
+  the trip's "tz".
 flights: [ {"id","flight":"DL 100","route":"HOME → CITY","date":"Sat Sep 5","dep":"8:00 AM",
             "arr":"12:30 PM","aircraft","cabin","seats","terminal","trackUrl":"","homeNote"} ]
 reservationsSeed: [ {"title","date":"Sep 5","time":"8:00 AM" or "","notes"} ]

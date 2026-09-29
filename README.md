@@ -118,6 +118,21 @@ as another traveler.
 
 Change the port with an env var: `PORT=8080 npm start`.
 
+**See the during-the-trip screens with the sample.** The sample trip is dated in the
+past, so the app shows "welcome home". To try the countdown, the **Now** screen and
+the weather, move the sample's dates to the coming days, then paste the file's contents
+into the admin page's **Trip Setup** box, **Validate**, then **Import**:
+
+```bash
+node tools/shift-trip-dates.js --sample --start today --out sample-now.json
+```
+
+`--start today+3` shows the countdown instead; `--start 2026-12-24` picks a date. The
+same tool re-dates any trip file you are reusing (`node tools/shift-trip-dates.js
+my-trip.json --start 2027-06-01 --out my-trip.json`): it moves the start/end, each day's
+date, flight and booking dates, and date-style day labels, and lists any date it
+finds in free text (like the subtitle) for you to fix by hand.
+
 > **Note on `better-sqlite3`.** This package pins `better-sqlite3` to a line that ships
 > prebuilt binaries for Node 22 and 24, so `npm install` won't need a compiler on a
 > supported runtime. If install tries to compile and fails, you're on an unsupported Node
@@ -144,8 +159,11 @@ signed in or not. The block's keys (the same shape as `trip-seed.json`):
 
 - **`trip`** — title, brand, subtitle, start/end dates, optional photos URL
 - **`family`** — the travelers: `name`, `color` (`[background, text]`), `interests`
+- **`planners`** (optional) — who may edit the Day Plan, e.g. `["Alex", "Sam"]`;
+  leave it out and every traveler can. Names must match `family` exactly.
 - **`days`** — each day: `id`, `label`, `location`, and an `activities` array
-- **`dayCoords`** — map pin per day id: `ll: [lat, lng]`, `zoom`, `name`, `date`
+- **`dayCoords`** — map pin per day id: `ll: [lat, lng]`, `zoom`, `name`, `date`, and
+  an optional `tz` for a day in another time zone
 - **`flights`**, **`reservationsSeed`**, **`essentials`**, **`embassies`**, **`enrichments`**
 
 Two things to keep in sync when you rename travelers by hand:
@@ -155,8 +173,10 @@ Two things to keep in sync when you rename travelers by hand:
 
 Timezone for the calendar/now-clock: the trip's top-level `"tz"` key
 (e.g. `"America/Chicago"`). Weather shows °F unless the trip has a top-level
-`"units": "C"`. Optional per-day or per-activity overrides go in the
-`DAY_TZ` / `ACT_TZ` objects in `public/index.html`.
+`"units": "C"`. A trip that changes time zones gives each such day its own zone in
+`dayCoords.<day>.tz` (e.g. `"Europe/Rome"`); that day's "today", Now-screen clock and
+calendar times use it. Per-activity overrides still go in the `ACT_TZ` object in
+`public/index.html`.
 
 ## File layout
 ```
@@ -170,7 +190,7 @@ trip-dashboard-template/
 ├── Setup.bat              # Windows: one-time install (double-click)
 ├── Start-Dashboard.bat    # Windows: start the app + open the browser (double-click)
 ├── Apply-Trip.bat         # Windows: install your my-trip.json (double-click)
-├── tools/                 # validate-trip-data.js, apply-trip-data.js, profile-export.js
+├── tools/                 # validate-trip-data.js, apply-trip-data.js, shift-trip-dates.js, profile-export.js
 ├── START_HERE.md          # orientation: which doc to read for what
 ├── KICKSTART.md           # from-zero beginner walkthrough (Windows-first)
 ├── BUILD_WITH_AI.md       # let an AI fill in your trip (no coding)

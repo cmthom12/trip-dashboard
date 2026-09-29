@@ -351,6 +351,9 @@ function packChecks() {
   }
   ck('…a folded group says "Show", its items are hidden, and the other group stays open',
     !!folded && /Show/.test(text(folded.h)) && shown(folded.app).join() === 'Hat' && shown(openApp).join() === 'Hat,Snacks');
+  const note = folded ? all(folded.app, n => n.props.className === 'pack-folded-note')[0] : null;
+  ck('…a folded group says how many items it is hiding and which sections ("1 item folded away … Tap Show"); an open one says nothing',
+    !!note && /^1 item folded away/.test(text(note)) && /Tap Show/.test(text(note)) && all(openApp, n => n.props.className === 'pack-folded-note').length === 0);
   ck('…a folded header points at no list (its list is not on the page); open lists have distinct ids',
     !!folded && folded.h.props['aria-controls'] === undefined && new Set(heads.map(h => h.props['aria-controls'])).size === heads.length);
   ck('…its focus ring is drawn inside the header (the card would clip one outside it)', /\.pack-group-head:focus-visible\{outline-offset:-3px/.test(HTML));
@@ -511,11 +514,50 @@ function todayChecks() {
   mixed.dayCoords.day4.date = '2026-09-07'; // day4 claims Sep 7 by date
   o = run(mixed);
   ck('…a dated day wins, and counting never lands on a day that has a different date of its own', o.d7 === 'day4' && o.d8 === null);
+  ck('…an undated day between two dated days is found by counting (Sep 6 → day2), not by the earlier dated day', o.d6 === 'day2');
+  // v0.25.2: per-day time zones. Day 3 (Sep 7) is in Rome; the trip's zone is
+  // New York. At 22:30 UTC on Sep 6 it is 18:30 Sep 6 in New York but already
+  // 00:30 Sep 7 in Rome — the family has arrived in day 3.
+  const zoned = JSON.parse(JSON.stringify(trip));
+  zoned.dayCoords.day3.tz = 'Europe/Rome'; zoned.dayCoords.day4.tz = 'Europe/Rome';
+  o = run(zoned);
+  ck('a day with its own time zone: just after midnight in Rome it is already day 3 there (New York still says Sep 6)', o.tzDay === 'day3' && o.tzMap && o.tzMap.day3 === 'Europe/Rome' && !o.tzMap.day1);
+  ck('…the Now screen reads the clock in that day\'s zone: at 00:30 Rome the 9:00 AM item is Next up (read in New York, 18:30, nothing would be)', o.tzNext === 'next=9:00' && o.tzPhase === 'during');
+  // westward: day 3 (Sep 7) in Rome, day 4 (Sep 8) back in New York. At 01:00
+  // Rome on Sep 8 (19:00 Sep 7 in New York) neither date matches its own
+  // zone; day 3 must stay "today" until day 4 begins.
+  const west = JSON.parse(JSON.stringify(trip));
+  west.dayCoords.day3.tz = 'Europe/Rome';
+  o = run(west);
+  ck('…westward: between Rome\'s midnight and New York\'s, day 3 stays today (not "nothing today")', o.westDay === 'day3' && o.westPhase === 'during');
+  // the ends of a zoned trip: day 1 in Honolulu (UTC−10), the last day in Rome
+  const ends = JSON.parse(JSON.stringify(trip));
+  ends.dayCoords.day1.tz = 'Pacific/Honolulu'; ends.dayCoords.day4.tz = 'Europe/Rome';
+  o = run(ends);
+  ck('…before day 1 starts in ITS zone (still Sep 4 in Honolulu, Sep 5 in New York) the trip is "before", not "during" with no today', o.eStartPhase === 'before' && o.eStartDay === null);
+  ck('…after the last day ends in ITS zone (Sep 9 in Rome, Sep 8 in New York) the trip is "after"', o.eEndPhase === 'after' && o.eEndDay === null);
+  const badz = JSON.parse(JSON.stringify(trip));
+  badz.dayCoords.day3.tz = 'Mars/Olympus_Mons';
+  o = run(badz);
+  ck('…an unknown zone name is ignored (that day uses the trip\'s zone)', o.tzDay === 'day2' && o.tzMap && Object.keys(o.tzMap).length === 0);
 }
 
 if (process.env.UI_CHILD === 'today') {
   const at = d => Date.UTC(2026, 8, d, 16, 0);
-  process.stdout.write(JSON.stringify({ d5: (X.todayDay(at(5)) || {}).id || null, d7: (X.todayDay(at(7)) || {}).id || null, d8: (X.todayDay(at(8)) || {}).id || null }));
+  const zms = Date.UTC(2026, 8, 6, 22, 30);
+  // day 3 plan: 00:15 (already past at 00:30 Rome) and 09:00 (next up). With
+  // the clock read in New York (18:30) both would be past and nothing is next.
+  let tzNext = null;
+  try {
+    const nh = X.NowHome({ schedule: [{ id: 1, day_id: 'day3', title: 'Late snack', time_text: '00:15' }, { id: 2, day_id: 'day3', title: 'Morning walk', time_text: '09:00' }], reservations: [], interests: {}, nowMs: zms, onOpenDay() {}, onTab() {} });
+    const s = text(nh); tzNext = s.includes('9:00 AM \u00B7 Morning walk') ? 'next=9:00' : 'no-next';
+  } catch (e) { tzNext = 'ERR ' + e.message; }
+  process.stdout.write(JSON.stringify({ d5: (X.todayDay(at(5)) || {}).id || null, d7: (X.todayDay(at(7)) || {}).id || null, d8: (X.todayDay(at(8)) || {}).id || null,
+    tzDay: (X.todayDay(zms) || {}).id || null, tzMap: X.DAY_TZ || null, tzPhase: X.tripPhase(zms), tzNext,
+    westDay: (X.todayDay(Date.UTC(2026, 8, 7, 23, 0)) || {}).id || null, westPhase: X.tripPhase(Date.UTC(2026, 8, 7, 23, 0)),
+    d6: (X.todayDay(at(6)) || {}).id || null,
+    eStartPhase: X.tripPhase(Date.UTC(2026, 8, 5, 6, 0)), eStartDay: (X.todayDay(Date.UTC(2026, 8, 5, 6, 0)) || {}).id || null,
+    eEndPhase: X.tripPhase(Date.UTC(2026, 8, 8, 23, 0)), eEndDay: (X.todayDay(Date.UTC(2026, 8, 8, 23, 0)) || {}).id || null }));
   process.exit(0);
 }
 

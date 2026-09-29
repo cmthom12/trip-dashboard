@@ -98,6 +98,24 @@ curl -s https://smith.YOUR_DOMAIN/api/health     # {"status":"ok","version":"<re
 
 ---
 
+## Unknown names get nothing (catch-all site, optional)
+Without a default site, nginx answers a hostname it doesn't know — a torn-down trip whose
+DNS record still exists, a typo — with the first site alphabetically, under a certificate
+warning. `deploy/nginx/catch-all.conf` makes it drop those requests instead (no page, no
+certificate); sites reached by name are unaffected. **Not for a bare-IP install:** a
+browser sends no name to an IP, so https by IP would be refused too. Install steps and the
+two checks to run first are in the file's header; `tools/catchall-rehearsal.sh` checks it
+against a real nginx.
+
+## Removing a trip
+`deploy/teardown-trip.sh <name> <sha16>` runs on the server (copy it to `/root/`). It only
+removes a trip listed in `/root/teardown-allow.txt` (which also names the server), and only
+when the live `data.db` matches your archived copy's sha256 with no unwritten WAL. It keeps
+the nginx site and `ecosystem.config.js` (never `.env`) in `/root/retired/`, takes the site
+out and tests nginx **before** stopping the app (a failed test puts the site back), then
+removes the PM2 process, the certificate and the app folder, and checks each is gone. Archive
+first (`data.db`, the trip JSON, notes, a profile export); remove the DNS record last.
+
 ## Renewal
 certbot installs a systemd timer that runs twice daily and renews when due, reloading
 Nginx. Verify it any time on the server:

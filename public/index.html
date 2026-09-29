@@ -3140,7 +3140,29 @@ const daysFromToday = ymd => {
   const t = new Date(n.getFullYear(), n.getMonth(), n.getDate());
   return Math.round((d - t) / 86400000);
 };
-const DAY_TZ = {};
+// v0.25.2: a day can name its own time zone — dayCoords.<day>.tz, an IANA
+// name like "Europe/Rome" — for trips that cross zones. Days without one use
+// the trip's "tz". An unknown zone name is ignored (the validator warns).
+const _tzOk = z => {
+  try {
+    new Intl.DateTimeFormat("en-CA", {
+      timeZone: z
+    });
+    return true;
+  } catch (e) {
+    return false;
+  }
+};
+const DAY_TZ = (() => {
+  const out = {};
+  try {
+    Object.keys(DAY_COORDS || {}).forEach(k => {
+      const z = DAY_COORDS[k] && DAY_COORDS[k].tz;
+      if (typeof z === "string" && z && _tzOk(z)) out[k] = z;
+    });
+  } catch (e) {}
+  return out;
+})();
 const ACT_TZ = {};
 function tzForEvent(dayId, activityId) {
   if (activityId && ACT_TZ[activityId]) return ACT_TZ[activityId];
@@ -4658,19 +4680,20 @@ function TabBar({
 // NOW — today's plan, the next timed item and one directions link — instead
 // of the whole itinerary. Every helper takes the time as an argument so the
 // screen can be checked for any moment of the trip.
-const _ymdIn = ms => {
+// The calendar date / clock time at `ms` in a zone (the trip's zone by default).
+const _ymdIn = (ms, tz) => {
   try {
     return new Intl.DateTimeFormat("en-CA", {
-      timeZone: DEFAULT_TZ
+      timeZone: tz || DEFAULT_TZ
     }).format(new Date(ms));
   } catch (e) {
     return new Intl.DateTimeFormat("en-CA").format(new Date(ms));
   }
 };
-const _hmIn = ms => {
+const _hmIn = (ms, tz) => {
   try {
     return new Intl.DateTimeFormat("en-GB", {
-      timeZone: DEFAULT_TZ,
+      timeZone: tz || DEFAULT_TZ,
       hour: "2-digit",
       minute: "2-digit",
       hour12: false
@@ -4680,19 +4703,48 @@ const _hmIn = ms => {
   }
 };
 const _isoOk = v => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ""));
+// A dated day that is "today" in its OWN zone (v0.25.2). When two match —
+// the hours around midnight on a day the trip changes zones eastward — the
+// later day in the plan wins: that is the one the family is heading into.
+// When none matches but the trip is between two days — westward, a day's own
+// midnight has passed while the next day (in a zone further west) has not
+// started yet — the day that has begun stays "today" until the next begins.
+const _planDate = d => d && DAY_COORDS && DAY_COORDS[d.id] && DAY_COORDS[d.id].date || "";
+const _ownYmd = (ms, d) => _ymdIn(ms, DAY_TZ[d.id]);
+function _datedToday(ms) {
+  let hit = null,
+    gap = null;
+  DAYS.forEach((d, i) => {
+    const dd = _planDate(d);
+    if (!dd) return;
+    const own = _ownYmd(ms, d);
+    if (own === dd) hit = d;
+    // the gap: this day has begun, and the VERY NEXT plan day is dated and
+    // has not (an undated day in between is left to the counting rule)
+    const nx = DAYS[i + 1];
+    if (own > dd && nx && _planDate(nx) && _ownYmd(ms, nx) < _planDate(nx)) gap = d;
+  });
+  return hit || gap;
+}
 function tripPhase(ms) {
   const s0 = TRIP.trip && TRIP.trip.startDate,
     e0 = TRIP.trip && TRIP.trip.endDate;
   if (!_isoOk(s0) || !_isoOk(e0)) return "unknown";
+  if (_datedToday(ms)) return "during";
+  // the ends of the trip in the first / last day's own zone, when they are dated
+  const first = DAYS[0],
+    last = DAYS[DAYS.length - 1];
+  if (_planDate(first) && _ownYmd(ms, first) < _planDate(first)) return "before";
+  if (_planDate(last) && _ownYmd(ms, last) > _planDate(last)) return "after";
   const t = _ymdIn(ms);
   return t < s0 ? "before" : t > e0 ? "after" : "during";
 }
-// Which day of the plan is today: by its map date, else by its place in the
-// trip (day N = start + N-1) when days carry no dates.
+// Which day of the plan is today: by its map date (in that day's own zone),
+// else by its place in the trip (day N = start + N-1) when days carry no dates.
 function todayDay(ms) {
+  const hit = _datedToday(ms);
+  if (hit) return hit;
   const t = _ymdIn(ms);
-  const byDate = Object.keys(DAY_COORDS || {}).find(k => DAY_COORDS[k] && DAY_COORDS[k].date === t);
-  if (byDate) return DAYS.find(d => d.id === byDate) || null;
   if (tripPhase(ms) !== "during") return null;
   const p = String(TRIP.trip.startDate).split("-"),
     q = t.split("-");
@@ -4797,7 +4849,7 @@ function NowHome({
   }));
   if (phase === "during") {
     const d = todayDay(nowMs);
-    const hm = _hmIn(nowMs);
+    const hm = _hmIn(nowMs, d && DAY_TZ[d.id]);
     const rows = d ? planRowsFor(d.id, schedule) : [];
     const upcoming = rows.filter(r => r.time_text && r.time_text >= hm);
     const nxt = upcoming[0] || rows.find(r => !r.time_text) || null;
@@ -4831,7 +4883,7 @@ function NowHome({
     }, "TODAY", (() => {
       const p = String(TRIP.trip.startDate).split("-"),
         e = String(TRIP.trip.endDate).split("-"),
-        q = _ymdIn(nowMs).split("-");
+        q = _ymdIn(nowMs, d && DAY_TZ[d.id]).split("-");
       const du = a => Date.UTC(+a[0], +a[1] - 1, +a[2]);
       const n = Math.round((du(q) - du(p)) / 86400000) + 1,
         tot = Math.round((du(e) - du(p)) / 86400000) + 1;
@@ -7508,12 +7560,8 @@ function App() {
   const [decideView, setDecideView] = useState("days");
   const [day, setDay] = useState(() => {
     try {
-      const ymd = new Intl.DateTimeFormat("en-CA", {
-        timeZone: DEFAULT_TZ
-      }).format(new Date());
-      for (const id in DAY_COORDS) {
-        if (DAY_COORDS[id] && DAY_COORDS[id].date === ymd) return id;
-      }
+      const td = _datedToday(Date.now());
+      if (td) return td.id;
     } catch (e) {}
     return (TRIP.days[0] || {}).id;
   });
@@ -8374,17 +8422,10 @@ function App() {
     setMoreOpen: setMoreOpen
   })), tab !== "now" && React.createElement(Countdown, null), React.createElement(ShareChip, null), tab !== "now" && (() => {
     try {
-      const ymd = new Intl.DateTimeFormat("en-CA", {
-        timeZone: DEFAULT_TZ
-      }).format(new Date(nowTick));
-      const tid = Object.keys(DAY_COORDS).find(k => DAY_COORDS[k] && DAY_COORDS[k].date === ymd);
+      const tdd = _datedToday(nowTick);
+      const tid = tdd ? tdd.id : null;
       if (!tid) return null;
-      const hm = new Intl.DateTimeFormat("en-GB", {
-        timeZone: DEFAULT_TZ,
-        hour: "2-digit",
-        minute: "2-digit",
-        hour12: false
-      }).format(new Date(nowTick));
+      const hm = _hmIn(nowTick, DAY_TZ[tid]);
       const todays = (schedule || []).filter(s => s.day_id === tid);
       const timed = todays.filter(s => s.time_text && s.time_text >= hm).sort((a, b) => String(a.time_text).localeCompare(String(b.time_text)));
       const nxt = timed[0] || todays.find(s => !s.time_text);
@@ -10484,7 +10525,17 @@ function App() {
         }
       }, collapsed ? "Show" : "Hide", React.createElement("span", {
         "aria-hidden": "true"
-      }, collapsed ? " ▸" : " ▾"))), !collapsed && React.createElement("div", {
+      }, collapsed ? " ▸" : " ▾"))), collapsed && React.createElement("div", {
+        // v0.25.2: a folded group says what it is hiding, so it never looks
+        // empty ("where did my list go?")
+        className: "pack-folded-note",
+        style: {
+          fontSize: 12.5,
+          color: "#4B5563",
+          padding: "0 13px 11px 37px",
+          background: allDone ? "#F0FDF4" : bg
+        }
+      }, items.length === 1 ? "1 item folded away" : items.length + " items folded away", catOrder.length > 1 || catOrder[0] !== "Other" ? " \u2014 " + catOrder.join(", ") : "", ". Tap Show to see them."), !collapsed && React.createElement("div", {
         id: "pack-group-" + gi,
         style: {
           padding: "4px 10px 10px"

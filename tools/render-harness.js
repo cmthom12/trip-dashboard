@@ -84,7 +84,7 @@ const CAPTURE = ['TRIP', 'DAYS', 'FAMILY', 'CAT', 'PLANNERS',
   'readDataCache', 'saveDataCache', 'clearDataCache',
   'TEMP_UNIT', 'fmtChecked', 'daysFromToday', 'DEFAULT_TZ',
   'TabBar', 'TAB_LIST', 'PRIMARY_TABS',
-  'NowHome', 'tripPhase', 'todayDay', 'initialTab', 'directionsUrl', 'fmt12', 'RETRO_UNLOCKED',
+  'NowHome', 'tripPhase', 'todayDay', 'initialTab', 'directionsUrl', 'fmt12', 'RETRO_UNLOCKED', 'DAY_TZ',
   'favoriteToAdd', 'favoritePlanBody', 'PackRow', 'PACK_PERSON_ORDER', 'ssoNoteFor', 'Countdown', 'mergePendingPlan', 'DayPlanCard'];
 
 function block(tag, id) {
@@ -535,11 +535,11 @@ if (require.main === module && process.env.TRIP_EMIT_POPUPS !== '1' && process.e
     ck('weather: unit follows the trip (sample has none → fahrenheit)', X.TEMP_UNIT === 'F' && /temperature_unit=fahrenheit/.test(near[0] || ''));
   } else ck('WeatherChip exists', false);
   if (typeof X.fmtChecked === 'function') {
-    const iso = '2026-10-17T15:04:00.000Z';
+    const iso = '2026-09-05T15:04:00.000Z';
     const shown = X.fmtChecked(iso);
     const want = new Date(iso).toLocaleString('en-US', { timeZone: X.DEFAULT_TZ, month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' });
     ck('flight "last checked": an ISO stamp is shown in the trip time zone', shown === want && shown !== iso);
-    ck('flight "last checked": an older ready-made string is shown as-is', X.fmtChecked('10/17/2026, 10:04:00 AM') === '10/17/2026, 10:04:00 AM');
+    ck('flight "last checked": an older ready-made string is shown as-is', X.fmtChecked('9/5/2026, 11:04:00 AM') === '9/5/2026, 11:04:00 AM');
   } else ck('fmtChecked exists', false);
 
   // v0.24.0 offline shell: the lists snapshot belongs to one traveler.

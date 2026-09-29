@@ -91,6 +91,18 @@ for (const u of ['celsius', 'c', 1]) {
 }
 ck('no units key: nothing said', warnsAbout(run(clone()), /"units"/).length === 0);
 
+// ── per-day time zone (v0.25.2) ─────────────────────────────────────────────
+{
+  const d = clone(); d.dayCoords.day3.tz = 'Europe/Rome';
+  const r = run(d);
+  ck('dayCoords.day3.tz "Europe/Rome": accepted (0 errors, no tz warning)', r.errors === 0 && warnsAbout(r, /\.tz /).length === 0);
+}
+for (const z of ['Mars/Olympus_Mons', '', 5]) {
+  const d = clone(); d.dayCoords.day3.tz = z;
+  const r = run(d);
+  ck('dayCoords.day3.tz ' + JSON.stringify(z) + ': warned (never an error — the app ignores it)', r.errors === 0 && warnsAbout(r, /dayCoords\.day3\.tz .* is not a time zone name/).length === 1);
+}
+
 console.log('');
 console.log('RESULT: ' + pass + ' PASS, ' + fail + ' FAIL');
 process.exit(fail ? 1 : 0);
